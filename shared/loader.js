@@ -124,6 +124,11 @@ async function loadDashboard(adapter, options = {}) {
   };
 
   // Shared ctx properties (available in all modes)
+  // Platform-agnostic sub-module loader. Widgets that load their own sub-modules
+  // have historically done it with ctx.nodeFs.readFileSync, which only exists in
+  // "full" mode — so such a widget cannot run on mobile at all. This routes through
+  // the adapter instead and works in both modes. Prefer it in new widgets.
+  ctx.loadModule = loadModule;
   ctx.markdownRenderer = markdownRenderer;
   ctx.animationsEnabled = animationsEnabled;
   const vaultBase = adapter.vaultBasePath();
@@ -256,6 +261,16 @@ async function loadDashboard(adapter, options = {}) {
       marginTop: "4px",
     }, "Mobile Command Interface"));
     wrapper.appendChild(header);
+
+    // Command sits above voice: on a phone the first thing wanted is what needs
+    // attention, not the input box. Rendered only when configured — an
+    // unconfigured widget is worth a line of explanation on a desktop layout and
+    // is just lost real estate on a 390px screen.
+    if (config.widgets?.command?.repo) {
+      const commandWidget = await (await loadModule("widgets/command/index.js"))(ctx);
+      commandWidget.style.marginBottom = isNarrow ? "16px" : "24px";
+      wrapper.appendChild(commandWidget);
+    }
 
     const voiceWidget = await (await loadModule("widgets/voice-command/mobile.js"))(ctx);
     wrapper.appendChild(voiceWidget);
