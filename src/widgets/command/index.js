@@ -15,15 +15,11 @@ const cfg = config.widgets?.command || {};
 const REFRESH_MS = cfg.refreshMs || 900000;          // 15 min
 const STALE_HOURS = cfg.staleAfterHours || 26;       // a daily rollup + 2h grace
 
-function loadSub(rel) {
-  const code = ctx.nodeFs.readFileSync(
-    ctx.nodePath.join(ctx._srcDir, "widgets", "command", rel), "utf8"
-  );
-  return new Function("ctx", code)(ctx);
-}
-
-const { fetchCommand } = loadSub("core/command-source.js");
-const { createItemCard } = loadSub("ui/item-card.js");
+// Sub-modules load via ctx.loadModule rather than ctx.nodeFs, so this widget runs
+// in mobile mode as well as full. nodeFs only exists in full mode, and a widget
+// that reaches for it is silently desktop-only.
+const { fetchCommand } = await (await ctx.loadModule("widgets/command/core/command-source.js"))(ctx);
+const { createItemCard } = await (await ctx.loadModule("widgets/command/ui/item-card.js"))(ctx);
 
 const section = el("div", { position: "relative", zIndex: "2" });
 section.appendChild(createSectionTitle("Command", { marginBottom: "6px" }));
