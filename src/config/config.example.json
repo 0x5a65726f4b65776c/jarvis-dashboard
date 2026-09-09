@@ -31,6 +31,7 @@
   },
   "layout": [
     { "type": "header" },
+    { "type": "command" },
     { "type": "jarvis-voice-command" },
     { "type": "live-sessions" },
     { "type": "row", "columns": 2, "widgets": ["focus-timer", "quick-capture"] },
@@ -43,6 +44,13 @@
     { "type": "footer" }
   ],
   "widgets": {
+    "command": {
+      "repo": "owner/your-orchestrator-repo",
+      "path": "facts/command.json",
+      "ref": "main",
+      "refreshMs": 900000,
+      "staleAfterHours": 26
+    },
     "focusTimer": {
       "workPresets": [
         { "label": "30m", "ms": 1800000 },

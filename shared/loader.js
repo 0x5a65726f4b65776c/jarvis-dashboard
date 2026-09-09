@@ -263,6 +263,7 @@ async function loadDashboard(adapter, options = {}) {
     // Full: render all widgets per layout config
     const WIDGET_MAP = {
       "header":                "widgets/header/index.js",
+      "command":               "widgets/command/index.js",
       "live-sessions":         "widgets/live-sessions/index.js",
       "system-diagnostics":    "widgets/system-diagnostics/index.js",
       "agent-cards":           "widgets/agent-cards/index.js",
