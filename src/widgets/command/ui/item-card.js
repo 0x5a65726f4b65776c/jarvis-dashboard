@@ -21,15 +21,14 @@ function severityOf(raw) {
   return SEVERITY[raw] || { color: T.purple, label: String(raw || "?").toUpperCase() };
 }
 
-function daysBetween(iso, now) {
-  if (!iso) return null;
-  const then = Date.parse(iso + (iso.length === 10 ? "T00:00:00Z" : ""));
-  if (Number.isNaN(then)) return null;
-  return Math.floor((now - then) / 86400000);
-}
+// Calendar-date arithmetic, not instant arithmetic. See core/day-math.js: the
+// old expression here read "due today" for an item due tomorrow every evening
+// west of UTC, because "now" had already crossed into the next UTC day.
+const { calendarDaysSince, calendarDaysUntil } = await (await ctx.loadModule("core/day-math.js"))(ctx);
 
 function ageLabel(since, now) {
-  const d = daysBetween(since, now);
+  if (!since) return null;
+  const d = calendarDaysSince(since, now);
   if (d == null) return null;
   if (d <= 0) return "today";
   if (d === 1) return "1 day";
@@ -37,11 +36,12 @@ function ageLabel(since, now) {
 }
 
 function dueLabel(due, now) {
-  const d = daysBetween(due, now);
+  if (!due) return null;
+  const d = calendarDaysUntil(due, now);
   if (d == null) return null;
-  if (d < 0) return { text: `due in ${-d}d`, urgent: -d <= 2 };
+  if (d > 0) return { text: `due in ${d}d`, urgent: d <= 2 };
   if (d === 0) return { text: "due today", urgent: true };
-  return { text: `${d}d overdue`, urgent: true };
+  return { text: `${-d}d overdue`, urgent: true };
 }
 
 function createItemCard(item, index, now) {

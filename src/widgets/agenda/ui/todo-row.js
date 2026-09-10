@@ -14,15 +14,13 @@ const SEVERITY = {
   yellow: T.gold,
 };
 
-function daysUntil(due, now) {
-  if (!due) return null;
-  const t = Date.parse(due + (due.length === 10 ? "T00:00:00Z" : ""));
-  if (Number.isNaN(t)) return null;
-  return Math.round((t - now) / 86400000);
-}
+// Calendar-date arithmetic, not instant arithmetic. See core/day-math.js for
+// the bug this avoids -- an item due tomorrow rendering as "today".
+const { calendarDaysUntil } = await (await ctx.loadModule("core/day-math.js"))(ctx);
 
 function dueLabel(due, now) {
-  const d = daysUntil(due, now);
+  if (!due) return null;
+  const d = calendarDaysUntil(due, now);
   if (d == null) return null;
   if (d < 0) return { text: `${-d}d overdue`, urgent: true };
   if (d === 0) return { text: "today", urgent: true };
