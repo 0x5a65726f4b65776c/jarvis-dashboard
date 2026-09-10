@@ -32,6 +32,7 @@
   "layout": [
     { "type": "header" },
     { "type": "command" },
+    { "type": "agenda" },
     { "type": "jarvis-voice-command" },
     { "type": "live-sessions" },
     { "type": "row", "columns": 2, "widgets": ["focus-timer", "quick-capture"] },
@@ -50,6 +51,11 @@
       "ref": "main",
       "refreshMs": 900000,
       "staleAfterHours": 26
+    },
+    "agenda": {
+      "_comment": "repo and ref fall back to widgets.command, and the GitHub token is shared with it — both files live in the same orchestrator repo, so there is nothing extra to configure.",
+      "path": "facts/agenda.json",
+      "refreshMs": 900000
     },
     "focusTimer": {
       "workPresets": [
