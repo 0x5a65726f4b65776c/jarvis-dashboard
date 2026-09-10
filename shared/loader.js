@@ -272,6 +272,16 @@ async function loadDashboard(adapter, options = {}) {
       wrapper.appendChild(commandWidget);
     }
 
+    // Agenda sits below Command and above voice: on a phone, what needs
+    // attention outranks what is merely scheduled, and both outrank the input
+    // box. Same configured-only guard as Command -- they share a repo setting,
+    // so agenda renders whenever command does unless given its own.
+    if (config.widgets?.agenda?.repo || config.widgets?.command?.repo) {
+      const agendaWidget = await (await loadModule("widgets/agenda/index.js"))(ctx);
+      agendaWidget.style.marginBottom = isNarrow ? "16px" : "24px";
+      wrapper.appendChild(agendaWidget);
+    }
+
     const voiceWidget = await (await loadModule("widgets/voice-command/mobile.js"))(ctx);
     wrapper.appendChild(voiceWidget);
   } else {
@@ -279,6 +289,7 @@ async function loadDashboard(adapter, options = {}) {
     const WIDGET_MAP = {
       "header":                "widgets/header/index.js",
       "command":               "widgets/command/index.js",
+      "agenda":                "widgets/agenda/index.js",
       "live-sessions":         "widgets/live-sessions/index.js",
       "system-diagnostics":    "widgets/system-diagnostics/index.js",
       "agent-cards":           "widgets/agent-cards/index.js",
