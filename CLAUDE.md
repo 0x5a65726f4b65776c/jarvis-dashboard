@@ -117,10 +117,20 @@ Hierarchy: Stewardship → Ownership → Capital Allocation → Systems → Oper
 - A phone number is never guessed.
 - No model identifier in commit messages, PR bodies, code comments, or any pushed artifact.
 - Git author: `Claude <noreply@anthropic.com>`.
+- **American English everywhere.** Replies, code, comments, commit messages, PR bodies,
+  documents, and email. License not licence, behavior not behaviour, organize not organise,
+  analyze not analyse. This binds the stack's own output, not a quotation of someone else's.
+- **No "needs + gerund."** Not "needs pasting," "needs fixed," "needs reviewed." Write
+  "needs to be pasted," or better, name the actor and the act: "paste the notice." The
+  construction hides who owes the work, which is the one thing a line addressed to Nick
+  must never do.
 - JARVIS orchestrates only. Division work goes to the division orchestrator; if one is
   unavailable, say so and stop — never substitute.
 - Any capture file recording an access blocker carries a last-verified date and is retested before
-  anything is built on it. A check the stack can run is never delegated to Nick.
+  anything is built on it. A check the stack can run is never delegated to Nick. The record is
+  `capture/verification_ledger.json` (`scripts/verified.py`); an expired row is not evidence.
+- End a session that produced a correction or a technique by running the review pass in
+  `doctrine/learning_loop.md`. A correction nobody wrote down is a correction Nick makes twice.
 
 ## Mailbox model (both tenants)
 
@@ -128,3 +138,4 @@ Hierarchy: Stewardship → Ownership → Capital Allocation → Systems → Oper
 decision, or conversion into a Planner task. Everything else goes to Archive immediately.
 `Waiting On` holds items blocked on someone else. Topic is a category for search, never a folder.
 Retrieval is search, not navigation.
+
