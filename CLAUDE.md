@@ -17,7 +17,10 @@ This stack exists to simplify his business life, not to narrate itself.
 5. Tables and short lines over paragraphs. If a sentence doesn't change a decision, cut it.
 6. One question maximum per reply, and only if it genuinely blocks.
 7. Match reply length to the weight of the ask.
-8. **End with the TLDR.** Nick reads the tail of a reply, so the last block is a
+8. **Expand an acronym the first time it appears in a reply.** GTC, STI, ST-2, CP 575.
+   An acronym Nick has to look up costs him the minute the reply was supposed to save.
+   Expand once, then use the short form freely.
+9. **End with the TLDR.** Nick reads the tail of a reply, so the last block is a
    standalone summary: what changed, what he must decide, what he must run. A reply that
    ends on a caveat, a tangent or a link has buried the answer. This does not soften 1 --
    lead with it and close with it.
