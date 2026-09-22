@@ -85,6 +85,14 @@ entry gate the closing rule assumes and never states.
 the technical approval, and aim there. A generic inbox and a contact who cannot say yes
 cost the same effort as the person who can.
 
+**The ask is an opinion, not a pitch.** Ask what they would need to see, how they would
+approach it, who owns it -- never ask them to consider or adopt anything. It makes them
+an advisor rather than a gatekeeper, it returns their criteria instead of a yes or no,
+and it requires no claims, which matters while the claim ledger permits so few. It must
+be a real question: if the desired answer is already known it is a pitch wearing a
+question mark, and that costs more than pitching honestly. Full rule and its three
+limits: `doctrine/the_ask.md` (Archeon).
+
 **Work backward from adoption.** Start at the buyer's costly constraint, the outcome they
 must have, their acceptance criteria, who holds buying authority and what the procurement
 path is. Fit the capability to that. A capability built first and aimed second is a
