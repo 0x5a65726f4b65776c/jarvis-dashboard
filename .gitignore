@@ -1,5 +1,10 @@
-.claude/
-CLAUDE.md
+# .claude/ and CLAUDE.md were ignored here until 2026-09-22. That made this
+# repo the one stack whose standing operating instruction did not survive a
+# clone: the rules existed on one machine and nowhere else, so a fresh
+# session started with no instruction at all. The other three repos track
+# both. Local-only settings belong in .claude/settings.local.json, which is
+# still ignored below.
+.claude/settings.local.json
 .DS_Store
 *.json.bak
 node_modules/
