@@ -63,6 +63,12 @@ stack's bookkeeping. They are not his interface and he is not a line-item approv
   same categories the hard constraints already protect.
 - A question that cannot be put in two sentences with a recommendation is not ready
   to go to him. Work it further or decide it.
+- **Never invent a deadline.** A date given to Nick names its external source — a
+  filing date, a comment period, a counterparty, a statute, a contract. If there is
+  no external date, say so: "no deadline, this can wait." An internal review-by date
+  is this stack's own scheduling and is never presented as a deadline or escalated
+  against. Inventing urgency teaches him to ignore the dates that are real, which
+  costs more than the item ever gained.
 
 The measure is unchanged: can Nick act in under a minute without opening anything
 else. A queue that requires him to open a list is a queue that will not be drained,
