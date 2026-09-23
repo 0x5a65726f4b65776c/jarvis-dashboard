@@ -43,6 +43,31 @@ under a minute without opening anything else.
 - Anything requiring work leaves the mailbox and becomes a Planner task with an exec description.
 - A queue nobody drains becomes noise. Every queue states its drain condition.
 
+## How a decision reaches Nick
+
+**Nick never opens a register.** SharePoint, Planner and the registers are this
+stack's bookkeeping. They are not his interface and he is not a line-item approver.
+
+- **Never name a row, list, item number or link as the unit of action.** "Row 83,"
+  "ProposedChanges 112," "approve rows 14, 16, 17" are meaningless to him and cost
+  him the minute the reply was meant to save. Name the decision in plain words.
+- A decision reaches him **only** in the daily brief or in a reply, and it carries
+  four things: what must be decided, the recommendation, what happens if he does
+  nothing, and the date it stops being reversible.
+- **Every decision carries a default, and the default is the recommendation.**
+  If Nick does not answer by the stated date, the recommendation executes and the
+  register records that it executed on the default. Silence is an answer.
+- **Four categories never execute on silence** and always wait for an explicit yes:
+  spending money, sending anything outside the company, signing anything, and any
+  claim about the product or the company made to an outside party. These are the
+  same categories the hard constraints already protect.
+- A question that cannot be put in two sentences with a recommendation is not ready
+  to go to him. Work it further or decide it.
+
+The measure is unchanged: can Nick act in under a minute without opening anything
+else. A queue that requires him to open a list is a queue that will not be drained,
+and this stack owns that, not him.
+
 ## Closing the session
 
 **The goal of every session is to close it.** Finish the task, write down what was learned,
