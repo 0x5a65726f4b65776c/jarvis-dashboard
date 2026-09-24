@@ -163,6 +163,9 @@ Hierarchy: Stewardship → Ownership → Capital Allocation → Systems → Oper
 - Max 8 SAM.gov calls per run; on 429 stop and report `nextAccessTime` verbatim, no retry.
 - Never ask Nick for a Graph secret. Never paste a secret into chat; if one appears, say it must
   be rotated.
+- Every message this stack composes ends with `doctrine/signature.html` -- the signature
+  table, the inline logo at `cid:atg-logo`, and the attribution line naming the drafting
+  agent and date. Build it with `scripts/compose_mail.py`, never by hand.
 - Display times in EDT, never Z.
 - Relationship management and congratulations lead an email; business follows.
 - A phone number is never guessed.
