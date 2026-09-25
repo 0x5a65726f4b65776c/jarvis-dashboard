@@ -171,6 +171,13 @@ Hierarchy: Stewardship → Ownership → Capital Allocation → Systems → Oper
 - A phone number is never guessed.
 - No model identifier in commit messages, PR bodies, code comments, or any pushed artifact.
 - Git author: `Claude <noreply@anthropic.com>`.
+- **Every outbound draft runs the voice gate, and attests that it did.** Three passes --
+  strip the AI tells, rewrite in Nick's register, then encoding and formatting -- then
+  `scripts/check_drafts.py`. It binds every outbound artifact, not just mail: website
+  copy, a capability statement, a LinkedIn post, a position description, anything pasted
+  into a form. ASCII only, and the send-ready text is fenced and unwrapped so it pastes
+  without line breaks landing mid-sentence. Nick has said this twice; it is mechanical
+  now because the habit failed.
 - **American English everywhere.** Replies, code, comments, commit messages, PR bodies,
   documents, and email. License not licence, behavior not behaviour, organize not organise,
   analyze not analyse. This binds the stack's own output, not a quotation of someone else's.
