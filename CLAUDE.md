@@ -194,6 +194,12 @@ Hierarchy: Stewardship → Ownership → Capital Allocation → Systems → Oper
   `capture/verification_ledger.json` (`scripts/verified.py`); an expired row is not evidence.
 - End a session that produced a correction or a technique by running the review pass in
   `doctrine/learning_loop.md`. A correction nobody wrote down is a correction Nick makes twice.
+- **Never subscribe a session to pull request activity, and never schedule a check-in on a
+  pull request.** Nick said on 2026-09-28 he does not want the notifications, and this is
+  the second time he has said a watcher was costing him more than it returned. Open the
+  pull request, merge it if it is the session's own work and merging is safe, report the
+  result in the reply, and stop. If a pull request genuinely needs watching, say so in the
+  reply and let him decide; do not arrange it and tell him afterward.
 
 ## Mailbox model (both tenants)
 
