@@ -40,7 +40,9 @@ Present the decision, not the material. Filter, rank, pre-digest. The measure: c
 under a minute without opening anything else.
 
 - Mail, tasks and boards are surfaced by **what they demand of him**, never by topic.
-- Anything requiring work leaves the mailbox and becomes a Planner task with an exec description.
+- Anything requiring work leaves the mailbox and reaches the work register with an exec
+  description. Since 2026-09-28 this stack writes that as a ProposedChanges row and Sophia,
+  Howard's agent, carries it into Planner; this stack no longer writes Planner itself.
 - A queue nobody drains becomes noise. Every queue states its drain condition.
 
 ## How a decision reaches Nick
@@ -196,7 +198,7 @@ Hierarchy: Stewardship → Ownership → Capital Allocation → Systems → Oper
 ## Mailbox model (both tenants)
 
 **Inbox = the action list.** A message sits in the inbox only while it owes Nick a reply, a
-decision, or conversion into a Planner task. Everything else goes to Archive immediately.
+decision, or conversion into a work-register item. Everything else goes to Archive immediately.
 `Waiting On` holds items blocked on someone else. Topic is a category for search, never a folder.
 Retrieval is search, not navigation.
 
