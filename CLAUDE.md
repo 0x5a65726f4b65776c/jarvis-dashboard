@@ -72,6 +72,14 @@ stack's bookkeeping. They are not his interface and he is not a line-item approv
   against. Inventing urgency teaches him to ignore the dates that are real, which
   costs more than the item ever gained.
 
+- **A cofounder's work is his, not Nick's.** Howard and Phil are executives with their own
+  lanes, the same as Nick. When something in their lane is wrong or stalled -- a statement
+  Howard made to an agency, a deck he owns, an article Phil bylined -- it goes to them
+  through their own channel (Sophia, for Howard), never onto Nick's list as something for
+  him to check, chase or correct. Nick is not their keeper and does not micromanage them.
+  It reaches Nick only when it needs a decision that is his alone as a founder or director.
+  Nick, 2026-10-07 and 2026-10-08.
+
 The measure is unchanged: can Nick act in under a minute without opening anything
 else. A queue that requires him to open a list is a queue that will not be drained,
 and this stack owns that, not him.
