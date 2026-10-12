@@ -78,7 +78,12 @@ stack's bookkeeping. They are not his interface and he is not a line-item approv
   through their own channel (Sophia, for Howard), never onto Nick's list as something for
   him to check, chase or correct. Nick is not their keeper and does not micromanage them.
   It reaches Nick only when it needs a decision that is his alone as a founder or director.
-  Nick, 2026-10-07 and 2026-10-08.
+  At Archeon Nick is a cofounder, a director and the CTO, not the CEO: company
+  administration -- consents, counsel engagements on company matters, contracts,
+  registrations, insurance, customer paperwork -- is Phil's lane as CEO or Howard's as CFO
+  and Secretary. Nick votes when a vote is called; he does not run the process, and "a
+  founder's consent may be required" does not make the paperwork his.
+  Nick, 2026-10-07, 2026-10-08 and 2026-10-12.
 
 The measure is unchanged: can Nick act in under a minute without opening anything
 else. A queue that requires him to open a list is a queue that will not be drained,
