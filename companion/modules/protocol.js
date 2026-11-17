@@ -14,8 +14,15 @@ const protocol = {
   streamDelta: (text) =>
     JSON.stringify({ type: "stream_delta", text }),
 
-  streamEnd: (sessionId) =>
-    JSON.stringify({ type: "stream_end", sessionId: sessionId ?? null }),
+  streamEnd: (sessionId, result = {}) =>
+    JSON.stringify({
+      type: "stream_end", sessionId: sessionId ?? null,
+      exitCode: Number.isInteger(result.exitCode) ? result.exitCode : null,
+      signal: result.signal || null,
+      resultReceived: result.resultReceived === true,
+      resultFailed: typeof result.resultFailed === "boolean" ? result.resultFailed : null,
+      taskVerified: false,
+    }),
 
   ttsAudio: (base64Pcm, sampleRate = 22050) =>
     JSON.stringify({ type: "tts_audio", data: base64Pcm, sampleRate }),

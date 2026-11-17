@@ -2,6 +2,30 @@
 // Parses NDJSON stream events and dispatches typed callbacks.
 // Used by both local (stdout) and remote (networkClient events) paths.
 
+// Process completion is separate from acceptance of the requested task.
+// Missing evidence (including legacy stream_end messages) stays unverified.
+function completionState(result = {}) {
+  const exitCode = Number.isInteger(result?.exitCode) ? result.exitCode : null;
+  const signal = result?.signal || null;
+  const resultReceived = result?.resultReceived === true;
+  const resultFailed = typeof result?.resultFailed === "boolean" ? result.resultFailed : null;
+  const failed = (exitCode !== null && exitCode !== 0) || !!signal || resultFailed === true;
+  const completed = !failed && exitCode === 0 && resultReceived && resultFailed === false;
+  return {
+    exitCode, signal, resultReceived, resultFailed, taskVerified: false,
+    status: failed ? "failed" : completed ? "completed" : "unknown",
+    uiState: failed ? "error" : completed ? "done" : "idle",
+    badgeState: failed ? "error" : completed ? "success" : "idle",
+    label: failed ? (signal ? `Process interrupted (${signal})` : exitCode ? `Process exited with code ${exitCode}` : "Response failed")
+      : completed ? "Response finished" : "Response status unverified — reconcile before retrying",
+  };
+}
+
+function historyCompletion(history) {
+  const last = [...history].reverse().find(turn => turn.role === "assistant" || turn.role === "user");
+  return completionState(last?.role === "assistant" ? last.completion : {});
+}
+
 function createStreamHandler(callbacks) {
   const {
     onTextDelta, onToolUseStart, onToolUseComplete,
@@ -130,7 +154,7 @@ function createStreamHandler(callbacks) {
       _lastStatusLabel = null;
       if (onTextDelta) onTextDelta(msg.text);
     } else if (type === "stream_end") {
-      if (onResult) onResult({ type: "stream_end", sessionId: msg.sessionId });
+      if (onResult) onResult({ ...msg, type: "stream_end" });
     } else if (type === "transcription") {
       // Handled by orchestrator
     } else if (type === "permission_request") {
@@ -192,4 +216,4 @@ function createStreamHandler(callbacks) {
   };
 }
 
-return { createStreamHandler };
+return { createStreamHandler, completionState, historyCompletion };
