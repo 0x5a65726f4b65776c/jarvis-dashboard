@@ -11,6 +11,7 @@ class ConnectionHandler {
     this.ws = ws;
     this.audioSession = null;
     this.activeRunner = null;
+    this.turnId = null;
     this.speakBuffer = "";
     this.tts = null;
     this.resetActivity = null;
@@ -26,8 +27,8 @@ class ConnectionHandler {
         supportedLangs: langConfig.supported || {},
       });
       this.tts.setCallbacks(
-        (base64Pcm, sampleRate) => {
-          this.send(protocol.ttsAudio(base64Pcm, sampleRate));
+        (base64Pcm, sampleRate, releaseId) => {
+          if (releaseId) this.send(protocol.ttsAudio(base64Pcm, sampleRate, releaseId));
         },
         () => {
           this.send(protocol.ttsEnd());
@@ -59,6 +60,7 @@ class ConnectionHandler {
 
   send(msg) {
     if (this.ws.readyState === WebSocket.OPEN) {
+      if (this.turnId) msg = JSON.stringify({ ...JSON.parse(msg), turnId: this.turnId });
       this.ws.send(msg);
       return true;
     }
@@ -69,6 +71,7 @@ class ConnectionHandler {
     if (this.activeRunner) { this.activeRunner.cancel(); this.activeRunner = null; }
     if (this.tts) this.tts.stop();
     if (this.audioSession) { this.audioSession.cleanup(); this.audioSession = null; }
+    this.turnId = null;
   }
 
   restoreSession(sessionId) {
@@ -81,6 +84,7 @@ class ConnectionHandler {
     if (this.audioSession) { this.audioSession.cleanup(); this.audioSession = null; }
     if (this.activeRunner) { this.activeRunner.cancel(); this.activeRunner = null; }
     if (this.tts) { this.tts.stop(); }
+    this.turnId = null;
   }
 }
 

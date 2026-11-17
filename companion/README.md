@@ -1,6 +1,6 @@
 # JARVIS Companion Server
 
-Secure WebSocket server that enables JARVIS voice commands from Obsidian Mobile (iPhone/iPad). Runs on your Mac, handles all heavy processing (whisper-cpp transcription, Claude CLI, TTS), and streams results back to mobile in real time.
+Secure WebSocket server that enables JARVIS voice commands from Obsidian Mobile (iPhone/iPad). Runs on your Mac and handles whisper-cpp transcription, Claude CLI, and TTS. Replies are released after the owning orchestrator and Hermes complete final review.
 
 ## Prerequisites
 
@@ -9,6 +9,19 @@ Secure WebSocket server that enables JARVIS voice commands from Obsidian Mobile 
 - **OpenSSL** (`brew install openssl`) — generates TLS certificates
 - **whisper-cpp** (`brew install whisper-cpp`) — optional, for voice commands
 - **Claude CLI** — installed and authenticated
+- **Python 3** — runs the selected project's delivery gate
+
+## Reviewed delivery
+
+The companion and desktop local-process widget hold candidate text off the UI and TTS. Permission requests, clarification requests, and process status can still appear while work continues. After Claude exits successfully, the transport checks the exact terminal result against `scripts/agent_gate.py` in the actual process working directory. A resumed session ID, a success exit code, or a caller-supplied approval flag cannot clear a reply.
+
+The check requires the runtime's terminal session ID, both review receipts, a successful Stop gate, the normalized reply hash, the exact submitted prompt hash, and a prompt receipt created after this process launched. Changed evidence, a different reply or prompt, an old review, missing hooks, or a failed reviewer withhold the reply. The fixed review-failure notice is a status message, not a cleared substantive answer. Retries and answer-resumes bind to a fresh launch and their own exact submitted prompt.
+
+Remote desktop and mobile clients require the authenticated companion's matching release ID and clean completion facts before rendering text, saving assistant text to history, or playing audio. Per-request IDs exclude late events from canceled or superseded requests. Server audio carries the same release ID and begins only after the release event. Legacy companion messages without these fields are withheld; update the companion and client together. The local desktop adapter is packaged separately at `src/widgets/voice-command/desktop/delivery-review.js`; an offline test keeps it byte-identical to `companion/modules/delivery-review.js`.
+
+Every selected project must have the current delivery scripts, runtime hooks, Hermes reviewer definition, and valid fidelity manifest. Pointing the widget at another directory does not borrow this repository's review receipts. Updating this repository alone does not restart an installed companion or refresh an already-loaded Obsidian widget. Activation requires deploying the updated companion and widget/service files, restarting or reloading them, and using an updated project context. No credentials, tool approvals, or platform permissions are expanded by this mechanism.
+
+Run `npm test` inside `companion` for offline regression checks. These execute the real Python gate against synthetic hook/review fixtures and exercise buffering, stale receipts, cancellation, local rendering, remote/mobile delivery, and delayed audio. They do not make a live Claude request or play audio. A cleared reply remains separate from proof that the underlying business task is complete; the transport continues to report `taskVerified: false`.
 
 ## Quick Start
 

@@ -1,0 +1,22 @@
+name: Agent learning and delivery contract
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify authoritative agent and skill versions
+        run: python3 scripts/check_agent_fidelity.py
+      - name: Verify final-delivery refusal and review cases
+        run: python3 -m unittest discover -s tests -p 'test_agent_*.py'
+      - name: Verify learning promotion and recurrence evidence
+        run: python3 scripts/test_learning_evidence.py

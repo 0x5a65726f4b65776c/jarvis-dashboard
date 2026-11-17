@@ -50,6 +50,12 @@ function createReconnectManager(options) {
           resultFailed: null,
           signal: null,
           completion: null,
+          projectPath: opts.projectPath,
+          startedAt: opts.startedAt,
+          submittedPrompt: opts.submittedPrompt,
+          finalText: null,
+          runtimeSessionId: null,
+          deliveryReview: null,
           _retryPending: false,
           _lastStatusLabel: null,
           _thinkingShown: false,
@@ -66,7 +72,7 @@ function createReconnectManager(options) {
 
       isReconnecting() {
         const st = window.__jarvisStreamState;
-        return st && (st.uiState === "streaming" || st.uiState === "closing" ||
+        return st && (st.uiState === "streaming" || st.uiState === "closing" || st.uiState === "reviewing" ||
                st.uiState === "waiting_permission" || st.uiState === "waiting_askuser");
       },
 

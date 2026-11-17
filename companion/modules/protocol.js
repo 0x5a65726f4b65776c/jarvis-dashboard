@@ -11,8 +11,8 @@ const protocol = {
   transcription: (text, detectedLang) =>
     JSON.stringify({ type: "transcription", text, ...(detectedLang ? { detectedLang } : {}) }),
 
-  streamDelta: (text) =>
-    JSON.stringify({ type: "stream_delta", text }),
+  streamDelta: (text, releaseId) =>
+    JSON.stringify({ type: "stream_delta", text, releaseId: releaseId || null }),
 
   streamEnd: (sessionId, result = {}) =>
     JSON.stringify({
@@ -21,11 +21,13 @@ const protocol = {
       signal: result.signal || null,
       resultReceived: result.resultReceived === true,
       resultFailed: typeof result.resultFailed === "boolean" ? result.resultFailed : null,
+      deliveryReview: ["cleared", "blocked"].includes(result.deliveryReview) ? result.deliveryReview : null,
+      releaseId: result.deliveryReview === "cleared" ? result.releaseId || null : null,
       taskVerified: false,
     }),
 
-  ttsAudio: (base64Pcm, sampleRate = 22050) =>
-    JSON.stringify({ type: "tts_audio", data: base64Pcm, sampleRate }),
+  ttsAudio: (base64Pcm, sampleRate = 22050, releaseId) =>
+    JSON.stringify({ type: "tts_audio", data: base64Pcm, sampleRate, releaseId: releaseId || null }),
 
   ttsEnd: () =>
     JSON.stringify({ type: "tts_end" }),

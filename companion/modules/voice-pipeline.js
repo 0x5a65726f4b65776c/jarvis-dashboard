@@ -4,12 +4,14 @@
 const fs = require("fs");
 const protocol = require("./protocol");
 const { extractSentences } = require("./text-processing");
+const { verifyDelivery, BLOCKED } = require("./delivery-review");
 
 class VoicePipeline {
-  constructor(conn, { transcriber, langConfig }) {
+  constructor(conn, { transcriber, langConfig, reviewDelivery = verifyDelivery }) {
     this._conn = conn;
     this._transcriber = transcriber;
     this._langConfig = langConfig;
+    this._reviewDelivery = reviewDelivery;
   }
 
   async processAudioEnd() {
@@ -21,6 +23,7 @@ class VoicePipeline {
     }
 
     const session = conn.audioSession;
+    const requestTurnId = conn.turnId;
     conn.audioSession = null;
 
     try {
@@ -29,6 +32,7 @@ class VoicePipeline {
       console.log(`[JARVIS] WAV file: ${wavPath} (${wavStat.size} bytes)`);
 
       const result = await this._transcriber.transcribe(wavPath);
+      if (conn.turnId !== requestTurnId) { session.cleanup(); return; }
       const text = typeof result === "string" ? result : result.text;
       let detectedLang = typeof result === "string" ? null : result.detectedLang;
       console.log(`[JARVIS] Transcription: "${text}" (lang: ${detectedLang || "default"})`);
@@ -57,6 +61,7 @@ class VoicePipeline {
       this.runClaude(text, detectedLang);
     } catch (err) {
       session.cleanup();
+      if (conn.turnId !== requestTurnId) return;
       conn.send(protocol.error("transcription", err.message));
     }
   }
@@ -74,34 +79,54 @@ class VoicePipeline {
     }
 
     conn.speakBuffer = "";
-    const turn = { finished: false };
+    const turn = { finished: false, validating: false, requestTurnId: conn.turnId };
     this._turn = turn;
-    const current = () => this._turn === turn && !turn.finished;
+    const current = () => this._turn === turn && !turn.finished && conn.turnId === turn.requestTurnId;
     const handle = conn.runner.run(messageText, {
       onDelta: (delta) => {
         if (!current()) return;
         if (conn.resetActivity) conn.resetActivity();
-        if (!conn.send(protocol.streamDelta(delta))) return;
-
-        // TTS sentence buffering
-        if (conn.tts?.isEnabled) {
-          conn.speakBuffer += delta;
-          const { sentences, remainder } = extractSentences(conn.speakBuffer);
-          conn.speakBuffer = remainder;
-          sentences.forEach((s) => conn.tts.enqueue(s, detectedLang));
-        }
+        // Candidate deltas include drafts and Stop-hook continuations. Keep all
+        // of them off the socket and TTS; only the terminal result can clear.
       },
-      onEnd: (result) => {
-        if (!current()) return;
-        turn.finished = true;
+      onEnd: async (result) => {
+        if (!current() || turn.validating) return;
         const { exitCode, sessionId } = result;
-        conn.activeRunner = null;
-        if (conn.tts?.isEnabled && conn.speakBuffer.trim()) {
-          conn.tts.enqueue(conn.speakBuffer.trim(), detectedLang);
+        if (exitCode !== 0 || result.signal || result.resultReceived !== true || result.resultFailed !== false) {
+          turn.finished = true;
+          conn.activeRunner = null;
+          conn.speakBuffer = "";
+          conn.send(protocol.streamEnd(sessionId, result));
+          return;
         }
-        conn.speakBuffer = "";
-        conn.send(protocol.streamEnd(sessionId, result));
-        console.log(`[JARVIS] Process ended (exit ${exitCode ?? "unknown"}, session ${sessionId?.slice(0, 7) || "none"})`);
+        turn.validating = true;
+        try {
+          const cleared = await this._reviewDelivery(result, messageText);
+          // A cancellation or a newer request can occur while Python verifies
+          // the release. It invalidates this connection's pending delivery.
+          if (!current()) return;
+          turn.finished = true;
+          conn.activeRunner = null;
+          const sent = conn.send(protocol.streamDelta(cleared.text, cleared.releaseId));
+          const ended = conn.send(protocol.streamEnd(sessionId, {
+            ...result, deliveryReview: "cleared", releaseId: cleared.releaseId,
+          }));
+          // The client sees the release attestation before any audio frame.
+          if (sent && ended && conn.tts?.isEnabled) {
+            const { sentences, remainder } = extractSentences(cleared.text);
+            sentences.forEach((s) => conn.tts.enqueue(s, detectedLang, cleared.releaseId));
+            if (remainder.trim()) conn.tts.enqueue(remainder.trim(), detectedLang, cleared.releaseId);
+          }
+          conn.speakBuffer = "";
+          console.log(`[JARVIS] Reviewed response delivered (session ${sessionId?.slice(0, 7) || "none"})`);
+        } catch {
+          if (!current()) return;
+          turn.finished = true;
+          conn.activeRunner = null;
+          conn.speakBuffer = "";
+          conn.send(protocol.error("review", BLOCKED));
+          conn.send(protocol.streamEnd(sessionId, { ...result, deliveryReview: "blocked" }));
+        }
       },
       onError: (err) => {
         if (!current()) return;
@@ -131,7 +156,14 @@ class VoicePipeline {
         console.log(`[JARVIS] Question request → client: ${requestId}`);
       },
     });
-    conn.activeRunner = turn.finished ? null : handle;
+    conn.activeRunner = turn.finished ? null : {
+      cancel: () => {
+        if (!current()) return;
+        turn.finished = true;
+        conn.speakBuffer = "";
+        handle.cancel();
+      },
+    };
   }
 }
 

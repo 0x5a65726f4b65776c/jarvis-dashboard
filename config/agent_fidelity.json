@@ -1,0 +1,39 @@
+{
+  "agents": [
+    {
+      "definition": "CLAUDE.md",
+      "kind": "orchestrator",
+      "name": "dashboard-maintainer",
+      "sha256": "be38ad051362ec9a3dd6eefdc759aa45e3ee4ea34f9866af3d3cd214a824a6e7",
+      "skills": {},
+      "sources": {
+        "AGENTS.md": "a69583abbc591f194c11f807268983193116c5e78666cb25f3a8c4681e201815",
+        "CLAUDE.md": "be38ad051362ec9a3dd6eefdc759aa45e3ee4ea34f9866af3d3cd214a824a6e7",
+        "scripts/build_agent_fidelity.py": "8a24da75fa65f5b24f15cbddd19776c2816caa0dd4cc2537aa30e1784a9af207"
+      }
+    },
+    {
+      "definition": ".claude/agents/hermes-reviewer.md",
+      "kind": "reviewer",
+      "name": "hermes-reviewer",
+      "sha256": "6e5fc5884465b025d971281cde3b7eb028fbf623302f1b6de8e0951b5820736c",
+      "skills": {},
+      "sources": {
+        ".claude/agents/hermes-reviewer.md": "6e5fc5884465b025d971281cde3b7eb028fbf623302f1b6de8e0951b5820736c"
+      }
+    }
+  ],
+  "contract_version": "2026-11-17.1",
+  "generator": null,
+  "repo": "jarvis-dashboard",
+  "schema_version": 1,
+  "shared_sources": {
+    ".claude/settings.json": "89ba4afcfdef6a9ff57ae5d298015c97a446c480a05c603d01c8c5951579d4b2",
+    "AGENTS.md": "a69583abbc591f194c11f807268983193116c5e78666cb25f3a8c4681e201815",
+    "CLAUDE.md": "be38ad051362ec9a3dd6eefdc759aa45e3ee4ea34f9866af3d3cd214a824a6e7",
+    "doctrine/agent_delivery.md": "9c1daf781d54111fadd514689bf097bd918dcd74a108a69e6aa578812384aaaa",
+    "scripts/agent_gate.py": "576956bc7bbee2055dfebfe406fb91f9f9fa331b8ce71308dc1addaecefd97fa",
+    "scripts/check_agent_fidelity.py": "1a3984b0ed7242d554cc86d8f3956ca7bcd088ec7f2928ff2e3fb5a096dbad5e",
+    "scripts/learning_evidence.py": "748fe7f600c68b2e9d115a79b555a538e2978c20bca5af9465473ac36b7b6217"
+  }
+}

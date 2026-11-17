@@ -70,9 +70,11 @@ function createProcessManager(options) {
     delete childEnv.CLAUDE_CODE_ENTRYPOINT;
     delete childEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
     const args = buildClaudeArgs(currentSessionId);
+    const deliveryRun = { projectPath: nodePath.resolve(cwd), startedAt: new Date().toISOString() };
     claudeProcess = spawn(claudePath, args, {
       cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"],
     });
+    claudeProcess._jarvisDelivery = Object.freeze(deliveryRun);
     return claudeProcess;
   }
 
@@ -81,6 +83,7 @@ function createProcessManager(options) {
       console.error("[JARVIS] Cannot retry — no streamState or sessionId");
       return null;
     }
+    cwd = st.projectPath || cwd;
     const approvedTools = [...(st.retryAllowedTools || [])];
     console.log("[JARVIS] Starting retry. sessionId:", st.sessionId,
       "approved tools for --allowedTools:", approvedTools);
@@ -92,6 +95,10 @@ function createProcessManager(options) {
     st.signal = null;
     st.completion = null;
     st.lineBuf = "";
+    st.finalText = null;
+    st.runtimeSessionId = null;
+    st.deliveryReview = null;
+    st.buffer = "";
 
     const { spawn } = require("child_process");
     const childEnv = Object.assign({}, process.env, { FORCE_COLOR: "0" });
@@ -111,6 +118,9 @@ function createProcessManager(options) {
       }
     }
 
+    st.projectPath = nodePath.resolve(cwd);
+    st.startedAt = new Date().toISOString();
+    st.submittedPrompt = "Permission granted. Please retry the file operation.";
     const newProc = spawn(claudePath, args, {
       cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"],
     });
@@ -120,7 +130,7 @@ function createProcessManager(options) {
 
     newProc.stdin.write(JSON.stringify({
       type: "user",
-      message: { role: "user", content: [{ type: "text", text: "Permission granted. Please retry the file operation." }] },
+      message: { role: "user", content: [{ type: "text", text: st.submittedPrompt }] },
     }) + "\n");
 
     return newProc;
@@ -131,6 +141,7 @@ function createProcessManager(options) {
       console.error("[JARVIS] Cannot resume for AskUserQuestion — no streamState or sessionId");
       return null;
     }
+    cwd = st.projectPath || cwd;
     st.resultReceived = false;
     st.resultFailed = null;
     st.exitCode = null;
@@ -138,6 +149,10 @@ function createProcessManager(options) {
     st.completion = null;
     st.lineBuf = "";
     st.uiState = "streaming";
+    st.finalText = null;
+    st.runtimeSessionId = null;
+    st.deliveryReview = null;
+    st.buffer = "";
 
     const { spawn } = require("child_process");
     const childEnv = Object.assign({}, process.env, { FORCE_COLOR: "0" });
@@ -146,6 +161,9 @@ function createProcessManager(options) {
     delete childEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
 
     const args = buildClaudeArgs(st.sessionId);
+    st.projectPath = nodePath.resolve(cwd);
+    st.startedAt = new Date().toISOString();
+    st.submittedPrompt = answerText;
     const newProc = spawn(claudePath, args, {
       cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"],
     });

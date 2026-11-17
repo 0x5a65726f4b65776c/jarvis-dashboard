@@ -55,7 +55,7 @@ class TTSManager {
     const wireEngine = (engine) => {
       engine.setCallbacks(
         (base64Pcm, sampleRate) => {
-          if (this._onAudioChunk) this._onAudioChunk(base64Pcm, sampleRate);
+          if (this._onAudioChunk && this._currentItem) this._onAudioChunk(base64Pcm, sampleRate, this._currentItem.releaseId);
         },
         (result) => {
           // On piper failure, retry with say engine as fallback
@@ -86,7 +86,7 @@ class TTSManager {
     }
   }
 
-  enqueue(text, lang) {
+  enqueue(text, lang, releaseId) {
     if (!this._enabled || this._muted) return;
     const clean = stripMarkdown(text).trim();
     if (!clean) return;
@@ -95,7 +95,7 @@ class TTSManager {
       effectiveLang = (this._hasSupportedLangs && !this._supportedLangs[lang])
         ? this._fallbackLang : lang;
     }
-    this._queue.push({ text: clean, lang: effectiveLang });
+    this._queue.push({ text: clean, lang: effectiveLang, releaseId });
     if (!this._busy) this._processNext();
   }
 
