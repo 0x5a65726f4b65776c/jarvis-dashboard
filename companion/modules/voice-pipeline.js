@@ -74,8 +74,12 @@ class VoicePipeline {
     }
 
     conn.speakBuffer = "";
-    conn.activeRunner = conn.runner.run(messageText, {
+    const turn = { finished: false };
+    this._turn = turn;
+    const current = () => this._turn === turn && !turn.finished;
+    const handle = conn.runner.run(messageText, {
       onDelta: (delta) => {
+        if (!current()) return;
         if (conn.resetActivity) conn.resetActivity();
         if (!conn.send(protocol.streamDelta(delta))) return;
 
@@ -87,42 +91,47 @@ class VoicePipeline {
           sentences.forEach((s) => conn.tts.enqueue(s, detectedLang));
         }
       },
-      onEnd: ({ exitCode, sessionId }) => {
+      onEnd: (result) => {
+        if (!current()) return;
+        turn.finished = true;
+        const { exitCode, sessionId } = result;
         conn.activeRunner = null;
         if (conn.tts?.isEnabled && conn.speakBuffer.trim()) {
           conn.tts.enqueue(conn.speakBuffer.trim(), detectedLang);
         }
         conn.speakBuffer = "";
-        conn.send(protocol.streamEnd(sessionId));
-        console.log(`[JARVIS] Turn complete (exit ${exitCode}, session ${sessionId?.slice(0, 7) || "none"})`);
+        conn.send(protocol.streamEnd(sessionId, result));
+        console.log(`[JARVIS] Process ended (exit ${exitCode ?? "unknown"}, session ${sessionId?.slice(0, 7) || "none"})`);
       },
       onError: (err) => {
+        if (!current()) return;
+        turn.finished = true;
         conn.activeRunner = null;
         conn.send(protocol.error("claude", err.message));
       },
       onPermissionRequest: (requestId, request) => {
+        if (!current()) return;
         if (conn.resetActivity) conn.resetActivity();
         // Auto-approve tools from config
         const autoApprove = conn._rawConfig.widgets?.voiceCommand?.interactive?.autoApproveTools || [];
         if (autoApprove.includes(request.tool_name)) {
           console.log(`[JARVIS] Auto-approving tool: ${request.tool_name} (${requestId})`);
-          if (conn.activeRunner) {
-            conn.activeRunner.sendControlResponse({
-              type: "control_response",
-              response: { subtype: "success", request_id: requestId, response: { behavior: "allow" } },
-            });
-          }
+          conn.runner.sendControlResponse({
+            subtype: "success", request_id: requestId, response: { behavior: "allow" },
+          });
           return;
         }
         conn.send(protocol.permissionRequest(requestId, request));
         console.log(`[JARVIS] Permission request → client: ${request.tool_name} (${requestId})`);
       },
       onQuestionRequest: (requestId, request) => {
+        if (!current()) return;
         if (conn.resetActivity) conn.resetActivity();
         conn.send(protocol.questionRequest(requestId, request));
         console.log(`[JARVIS] Question request → client: ${requestId}`);
       },
     });
+    conn.activeRunner = turn.finished ? null : handle;
   }
 }
 

@@ -87,6 +87,10 @@ function createProcessManager(options) {
 
     st.pendingPermissions.forEach(p => { if (p.status === "approved") p.status = "retrying"; });
     st.resultReceived = false;
+    st.resultFailed = null;
+    st.exitCode = null;
+    st.signal = null;
+    st.completion = null;
     st.lineBuf = "";
 
     const { spawn } = require("child_process");
@@ -128,6 +132,10 @@ function createProcessManager(options) {
       return null;
     }
     st.resultReceived = false;
+    st.resultFailed = null;
+    st.exitCode = null;
+    st.signal = null;
+    st.completion = null;
     st.lineBuf = "";
     st.uiState = "streaming";
 

@@ -33,7 +33,7 @@ const [
   { createTerminalPanel },
   { createRecorder },
   { createTTSAdapter },
-  { createStreamHandler },
+  { createStreamHandler, completionState, historyCompletion },
   { createCardRenderer },
   { createReconnectManager },
   { createProcessManager },
@@ -62,6 +62,7 @@ let fullBuffer = "";
 let currentSessionId = null;
 let currentDetectedLang = null;
 let conversationHistory = [];
+let remoteTurnActive = false;
 let preSpawnJsonlSet = null;
 let activeJarvisSessionId = null;
 
@@ -166,6 +167,7 @@ const cards = createCardRenderer({
 
 const projSelector = createProjectSelector({
   onSelect: (idx) => {
+    if (guardRemoteTurn()) return;
     const current = sessionManager.getActiveSession();
     if (current) {
       current.projectIndex = idx;
@@ -174,7 +176,7 @@ const projSelector = createProjectSelector({
     updateProjectTag();
     projSelector.update();
   },
-  isDisabled: () => uiState === "streaming" || uiState === "launching" || uiState === "recording" || uiState === "transcribing",
+  isDisabled: () => remoteTurnActive || uiState === "streaming" || uiState === "launching" || uiState === "recording" || uiState === "transcribing",
 });
 
 const tabs = createSessionTabs({
@@ -227,8 +229,8 @@ function setUIState(newState) {
   );
 
   const inputBusy = (newState === "recording" || newState === "transcribing" || newState === "launching");
-  textInput.setDisabled(inputBusy);
-  const selectorBusy = inputBusy || newState === "streaming";
+  textInput.setDisabled(inputBusy || remoteTurnActive);
+  const selectorBusy = remoteTurnActive || inputBusy || newState === "streaming";
   projSelector.setEnabled(!selectorBusy);
   updateSessionIndicator();
 }
@@ -248,7 +250,14 @@ function updateSessionIndicator() {
 }
 
 // ── Session management ──
+function guardRemoteTurn() {
+  if (!isRemoteMode || !remoteTurnActive) return false;
+  new Notice("Wait for the current response to finish or stop before changing sessions or starting another request.", 3500);
+  return true;
+}
+
 function switchToSession(jarvisSessionId) {
+  if (guardRemoteTurn()) return;
   if (jarvisSessionId === activeJarvisSessionId) return;
   tabs.cancelTabEdit();
   syncToManager();
@@ -262,12 +271,13 @@ function switchToSession(jarvisSessionId) {
   if (newSession) {
     newSession._notifyBadge = false;
     if (newSession.status === "streaming") setUIState("streaming");
-    else if (newSession.conversationHistory.length > 0) setUIState("done");
+    else if (newSession.conversationHistory.length > 0) setUIState(historyCompletion(conversationHistory).uiState);
     else setUIState("idle");
   }
 }
 
 function createNewSession(projectIndex) {
+  if (guardRemoteTurn()) return;
   syncToManager();
   tabs.cancelTabEdit();
   const session = sessionManager.createSession(projectIndex);
@@ -283,6 +293,7 @@ function createNewSession(projectIndex) {
 }
 
 function closeSession(jarvisSessionId) {
+  if (guardRemoteTurn()) return;
   tabs.cancelTabEdit();
   const session = sessionManager.getSession(jarvisSessionId);
   if (!session) return;
@@ -356,17 +367,12 @@ function replayTerminalForActiveSession() {
       const txt = turn.text;
       terminal.addMessageCopyIcon(assistantDiv, () => txt);
       outputArea.appendChild(assistantDiv);
-      if (terminal.showCompletionLabel) {
-        outputArea.appendChild(el("div", {
-          color: T.accent, opacity: "0.6", marginTop: "8px",
-          fontSize: isNarrow ? "10px" : "11px", letterSpacing: "1px",
-        }, `[${terminal.completionLabel}]`));
-      }
+      terminal.appendCompletionLine(completionState(turn.completion));
     }
   }
   if (conversationHistory.length > 0) {
     terminal.show();
-    terminal.setBadgeState("success");
+    terminal.setBadgeState(historyCompletion(conversationHistory).badgeState);
   }
 }
 
@@ -379,7 +385,7 @@ ctx.cleanups.push(() => document.removeEventListener("scroll", closeAllDropdowns
 if (conversationHistory.length > 0) {
   replayTerminalForActiveSession();
   updateSessionIndicator();
-  setUIState("done");
+  setUIState(historyCompletion(conversationHistory).uiState);
 }
 
 // Initial tag + tab render
@@ -388,13 +394,16 @@ tabs.render();
 
 // ── Recording actions ──
 function beginRecording() {
+  if (guardRemoteTurn()) return;
   tts.stop();
   if (isRemoteMode) {
+    remoteTurnActive = true;
     recorder.start().then(() => {
       if (terminal.getOutputArea().textContent.trim()) terminal.show();
       setUIState("recording");
       arcReactor.startTimer();
     }).catch(err => {
+      remoteTurnActive = false;
       new Notice("Microphone error: " + err.message, 5000);
       setUIState("error");
     });
@@ -466,6 +475,7 @@ function cancelStreaming() {
 // ── Text input handler ──
 textInput.onSend((text) => {
   if (!text) return;
+  if (guardRemoteTurn()) return;
   tabs.cancelTabEdit();
   if (uiState === "streaming") {
     cancelStreaming();
@@ -481,6 +491,7 @@ textInput.onSend((text) => {
     const echoLine = terminal.appendEchoLine(text, false, null);
     conversationHistory.push({ role: "user", text, timestamp: Date.now() });
     syncToManager();
+    remoteTurnActive = true;
     setUIState("streaming");
     terminal.setBadgeState("running");
     networkClient.sendTextCommand(text, currentSessionId, storage.getActiveProjectPath());
@@ -498,7 +509,7 @@ function handleKeyDown(e) {
     e.preventDefault();
     cancelStreaming();
     terminal.appendCancelLine();
-    setUIState("done");
+    setUIState(historyCompletion(conversationHistory).uiState);
     return;
   }
   if (e.key === "Escape") {
@@ -531,7 +542,7 @@ if (isRemoteMode) {
     } else if (uiState === "streaming" || uiState === "transcribing") {
       cancelStreaming();
       terminal.appendCancelLine();
-      setUIState("done");
+      setUIState(historyCompletion(conversationHistory).uiState);
     }
     tts.resumeAudioContext();
   });
@@ -544,7 +555,7 @@ if (isRemoteMode) {
     if (uiState === "streaming") {
       cancelStreaming();
       terminal.appendCancelLine();
-      setUIState("done");
+      setUIState(historyCompletion(conversationHistory).uiState);
       return;
     }
     isLongPress = false;
@@ -659,6 +670,7 @@ function launchClaudeInPanel(text) {
     projectIndex: getActiveProjectIndex(),
     detectedLang: currentDetectedLang,
     conversationHistory: [...conversationHistory],
+    fullBuffer,
     preSpawnJsonlSet,
   });
 
@@ -706,13 +718,18 @@ function launchClaudeInPanel(text) {
 }
 
 function attachDelegates(st, oc, to, ce, getTurnBuffer, setTurnBuffer) {
+  const ownerIsActive = () => !st.jarvisSessionId || st.jarvisSessionId === sessionManager.getActiveSessionId();
+  if (!Array.isArray(st.conversationHistory)) st.conversationHistory = [];
+  if (typeof st.fullBuffer !== "string") st.fullBuffer = ownerIsActive() ? fullBuffer : st.buffer || "";
+  if (ownerIsActive()) conversationHistory = st.conversationHistory;
   st._turnTextNodes = [];
   const streamRenderer = markdownRenderer.createStreamRenderer(oc);
   st._streamRenderer = streamRenderer;
 
   st._onTextDelta = (txt) => {
     setTurnBuffer(getTurnBuffer() + txt);
-    fullBuffer += txt;
+    st.fullBuffer += txt;
+    if (ownerIsActive()) fullBuffer = st.fullBuffer;
     st._lastStatusLabel = null;
     streamRenderer.append(txt);
     st._turnTextNodes = streamRenderer.getTextNodes();
@@ -722,7 +739,8 @@ function attachDelegates(st, oc, to, ce, getTurnBuffer, setTurnBuffer) {
   st._onToolUse = (toolName) => {
     const hasStatusLabel = { Skill: 1, Agent: 1, WebSearch: 1, WebFetch: 1 };
     if (!hasStatusLabel[toolName]) {
-      conversationHistory.push({ role: "tool", text: toolName, timestamp: Date.now() });
+      st.conversationHistory.push({ role: "tool", text: toolName, timestamp: Date.now() });
+      if (ownerIsActive()) conversationHistory = st.conversationHistory;
     }
     if (!terminal.showToolUseLabels) return;
     const alwaysAsk = interactiveCfg.alwaysAskTools || [];
@@ -733,7 +751,8 @@ function attachDelegates(st, oc, to, ce, getTurnBuffer, setTurnBuffer) {
 
   st._onStderr = (text) => {
     const cleaned = stripAnsi(text);
-    fullBuffer += cleaned;
+    st.fullBuffer += cleaned;
+    if (ownerIsActive()) fullBuffer = st.fullBuffer;
     oc.appendChild(el("span", { color: T.red }, cleaned));
     to.scrollTop = to.scrollHeight;
   };
@@ -748,25 +767,15 @@ function attachDelegates(st, oc, to, ce, getTurnBuffer, setTurnBuffer) {
     if (ce?.parentNode) ce.parentNode.removeChild(ce);
     const turnBuf = getTurnBuffer();
     if (turnBuf) terminal.addMessageCopyIcon(oc, () => turnBuf);
-    terminal.appendCompletionLine(code);
-    to.scrollTop = to.scrollHeight;
-
-    if (code === 0 && preSpawnJsonlSet && !currentSessionId) {
-      const detectedId = storage.detectNewSession(preSpawnJsonlSet);
-      if (detectedId) currentSessionId = detectedId;
-      preSpawnJsonlSet = null;
-    }
-    if (st.sessionId && !currentSessionId) currentSessionId = st.sessionId;
-    if (code === 0 && turnBuf) {
-      conversationHistory.push({ role: "assistant", text: turnBuf, timestamp: Date.now() });
-    }
+    const completion = completionState(st.completion || { ...st, exitCode: code });
+    st.conversationHistory.push({ role: "assistant", text: turnBuf || "", completion, timestamp: Date.now() });
 
     const ownerSession = st.jarvisSessionId ? sessionManager.getSession(st.jarvisSessionId) : null;
     if (ownerSession) {
-      ownerSession.sessionId = currentSessionId;
-      ownerSession.conversationHistory = conversationHistory;
-      ownerSession.fullBuffer = fullBuffer;
-      ownerSession.status = code === 0 ? "done" : "error";
+      ownerSession.sessionId = st.sessionId || ownerSession.sessionId;
+      ownerSession.conversationHistory = st.conversationHistory;
+      ownerSession.fullBuffer = st.fullBuffer;
+      ownerSession.status = completion.uiState;
       ownerSession.lastActiveAt = Date.now();
       if (st.jarvisSessionId !== sessionManager.getActiveSessionId()) {
         ownerSession._notifyBadge = true;
@@ -776,9 +785,23 @@ function attachDelegates(st, oc, to, ce, getTurnBuffer, setTurnBuffer) {
         return;
       }
     }
+    if (!ownerIsActive()) {
+      reconnect.clearStreamState();
+      return;
+    }
+    conversationHistory = st.conversationHistory;
+    fullBuffer = st.fullBuffer;
+    if (st.sessionId) currentSessionId = st.sessionId;
+    if (code === 0 && st.preSpawnJsonlSet && !currentSessionId) {
+      const detectedId = storage.detectNewSession(st.preSpawnJsonlSet);
+      if (detectedId) currentSessionId = detectedId;
+    }
+    preSpawnJsonlSet = null;
+    terminal.appendCompletionLine(completion);
+    to.scrollTop = to.scrollHeight;
     syncToManager();
     reconnect.clearStreamState();
-    setUIState(code === 0 ? "done" : "error");
+    setUIState(completion.uiState);
   };
 
   st._onPermissionRequest = (requestId, request) => {
@@ -801,9 +824,10 @@ function attachDelegates(st, oc, to, ce, getTurnBuffer, setTurnBuffer) {
 }
 
 function attachProcessHandlers(proc) {
-  proc.stdout.on("data", (chunk) => {
+  let finished = false;
+  const onChunk = (chunk) => {
     const st = reconnect.getActiveStream();
-    if (!st) return;
+    if (finished || !st || st.process !== proc) return;
     st.lineBuf += stripAnsi(chunk.toString("utf8"));
     const lines = st.lineBuf.split("\n");
     st.lineBuf = lines.pop();
@@ -816,6 +840,7 @@ function attachProcessHandlers(proc) {
           const txt = evt.event.delta.text;
           st.buffer += txt;
           if (st._onTextDelta) st._onTextDelta(txt);
+          else st.fullBuffer = (st.fullBuffer || "") + txt;
         }
         // Tool-use start
         if (evt.type === "stream_event" && evt.event?.type === "content_block_start" && evt.event?.content_block?.type === "tool_use") {
@@ -862,6 +887,11 @@ function attachProcessHandlers(proc) {
         if (evt.type === "result") {
           if (evt.session_id) st.sessionId = evt.session_id;
           st.resultReceived = true;
+          if (evt.is_error === true || (typeof evt.subtype === "string" && evt.subtype !== "success")) {
+            st.resultFailed = true;
+          } else if (st.resultFailed !== true && (evt.is_error === false || evt.subtype === "success")) {
+            st.resultFailed = false;
+          }
           const hasPending = interactiveCfg.interactivePermissions && st.pendingPermissions.some(p => p.status === "pending");
           const hasPendingAskUser = st.pendingInteractions.some(i => i.type === "askuser" && i.status === "pending");
           if (hasPending) {
@@ -877,6 +907,7 @@ function attachProcessHandlers(proc) {
         if (evt.type === "result" && evt.result && !st.buffer) {
           st.buffer += evt.result;
           if (st._onTextDelta) st._onTextDelta(evt.result);
+          else st.fullBuffer = (st.fullBuffer || "") + evt.result;
         }
         // Assistant event (AskUserQuestion, thinking)
         if (evt.type === "assistant" && evt.message?.content) {
@@ -908,20 +939,28 @@ function attachProcessHandlers(proc) {
         console.log("[JARVIS-DEBUG] JSON parse failed:", line.substring(0, 1000), e.message);
       }
     }
-  });
+  };
+  proc.stdout.on("data", onChunk);
 
   proc.stderr.on("data", (chunk) => {
     const st = reconnect.getActiveStream();
+    if (finished || !st || st.process !== proc) return;
     if (st?._onStderr) st._onStderr(chunk.toString("utf8"));
   });
 
-  proc.on("close", (code) => {
+  proc.on("close", (code, signal) => {
     const st = reconnect.getActiveStream();
+    if (finished || !st || st.process !== proc) return;
+    if (st.lineBuf) onChunk("\n");
+    finished = true;
     if (st) {
-      if (st.process && st.process !== proc) return;
       st.process = null;
       if (st._retryPending) {
         st._retryPending = false;
+        st.resultReceived = false;
+        st.resultFailed = null;
+        st.completion = null;
+        st.signal = null;
         const cwd = storage.expandPath(storage.getActiveProjectPath()) || app.vault.adapter.basePath;
         const newProc = processMgr.spawnRetryProcess(st, cwd);
         if (newProc) attachProcessHandlers(newProc);
@@ -929,7 +968,9 @@ function attachProcessHandlers(proc) {
       }
       if (st.uiState === "waiting_permission" || st.uiState === "waiting_askuser") return;
       st.exitCode = code;
-      st.uiState = "done";
+      st.signal = signal || null;
+      st.completion = completionState(st);
+      st.uiState = st.completion.uiState;
       st.pendingInteractions.forEach(i => { if (i.type === "askuser" && i.status === "pending") i.status = "expired"; });
       if (st.tempPermissions?.length > 0) {
         st.tempPermissions.forEach(entry => storage.removeSettingsPermission(entry));
@@ -939,16 +980,17 @@ function attachProcessHandlers(proc) {
     if (st?._onClose) {
       st._onClose(code);
     } else if (st) {
-      if (code === 0 && st.buffer) {
-        st.conversationHistory.push({ role: "assistant", text: st.buffer, timestamp: Date.now() });
-      }
+      st.conversationHistory.push({ role: "assistant", text: st.buffer || "", completion: st.completion, timestamp: Date.now() });
     }
   });
 
-  proc.on("error", (err) => {
+  const fail = (err) => {
     const st = reconnect.getActiveStream();
+    if (finished || !st || st.process !== proc) return;
+    finished = true;
     if (st) {
-      if (st.process && st.process !== proc) return;
+      st.resultFailed = true;
+      st.completion = completionState({ ...st, exitCode: null });
       st.uiState = "error";
       st.process = null;
       if (st.tempPermissions?.length > 0) {
@@ -957,8 +999,10 @@ function attachProcessHandlers(proc) {
       }
     }
     if (st?._onClose) st._onClose(-1);
-    else reconnect.clearStreamState();
-  });
+    else if (st) st.conversationHistory.push({ role: "assistant", text: st.buffer || "", completion: st.completion, timestamp: Date.now() });
+  };
+  proc.on("error", fail);
+  proc.stdin.on("error", fail);
 }
 
 function handleToolComplete(st, block, parsedInput) {
@@ -1027,6 +1071,7 @@ if (isRemoteMode && networkClient) {
   const outputArea = terminal.getOutputArea();
 
   networkClient.on("transcription", (msg) => {
+    if (!remoteTurnActive) return;
     currentDetectedLang = msg.detectedLang || null;
     terminal.show();
     const echoLine = terminal.appendEchoLine(msg.text, false, null);
@@ -1047,6 +1092,7 @@ if (isRemoteMode && networkClient) {
   });
 
   networkClient.on("stream_delta", (msg) => {
+    if (!remoteTurnActive) return;
     remoteFullBuffer += msg.text;
     fullBuffer += msg.text;
     if (!activeOutputContent) {
@@ -1077,6 +1123,9 @@ if (isRemoteMode && networkClient) {
   });
 
   networkClient.on("stream_end", (msg) => {
+    if (!remoteTurnActive) return;
+    remoteTurnActive = false;
+    const completion = completionState(msg);
     if (activeCursorEl?.parentNode) activeCursorEl.parentNode.removeChild(activeCursorEl);
     activeCursorEl = null;
     if (msg.sessionId) { currentSessionId = msg.sessionId; updateSessionIndicator(); }
@@ -1085,30 +1134,26 @@ if (isRemoteMode && networkClient) {
       const bufCopy = remoteFullBuffer;
       terminal.addMessageCopyIcon(activeOutputContent, () => bufCopy);
     }
-    if (remoteFullBuffer) conversationHistory.push({ role: "assistant", text: remoteFullBuffer, timestamp: Date.now() });
+    conversationHistory.push({ role: "assistant", text: remoteFullBuffer, completion, timestamp: Date.now() });
     syncToManager();
     if (remoteTtsMode === "local" && tts.isEnabled && !tts.isMuted && remoteSpeakBuffer.trim()) {
       tts.speak(stripMarkdown(remoteSpeakBuffer.trim()), currentDetectedLang);
     }
     remoteSpeakBuffer = "";
-    if (terminal.showCompletionLabel) {
-      outputArea.appendChild(el("div", {
-        color: T.accent, opacity: "0.6", marginTop: "8px",
-        fontSize: isNarrow ? "10px" : "11px", letterSpacing: "1px",
-      }, `[${terminal.completionLabel}]`));
-    }
+    terminal.appendCompletionLine(completion);
     outputArea.scrollTop = outputArea.scrollHeight;
     remoteFullBuffer = "";
     activeOutputContent = null;
     activeStreamRenderer = null;
-    setUIState("done");
-    terminal.setBadgeState("success");
+    setUIState(completion.uiState);
+    terminal.setBadgeState(completion.badgeState);
   });
 
   networkClient.on("tts_audio", (msg) => { tts.enqueueServerAudio(msg.data, msg.sampleRate); });
   networkClient.on("tts_end", () => {});
 
   networkClient.on("permission_request", (msg) => {
+    if (!remoteTurnActive) return;
     if (!activeOutputContent) {
       terminal.show();
       activeOutputContent = el("div", { color: T.text });
@@ -1118,6 +1163,7 @@ if (isRemoteMode && networkClient) {
   });
 
   networkClient.on("question_request", (msg) => {
+    if (!remoteTurnActive) return;
     if (!activeOutputContent) {
       terminal.show();
       activeOutputContent = el("div", { color: T.text });
@@ -1127,6 +1173,13 @@ if (isRemoteMode && networkClient) {
   });
 
   networkClient.on("error", (msg) => {
+    if (!remoteTurnActive) return;
+    remoteTurnActive = false;
+    const completion = completionState({ resultFailed: true });
+    conversationHistory.push({ role: "assistant", text: remoteFullBuffer, completion, timestamp: Date.now() });
+    syncToManager();
+    if (activeStreamRenderer) activeStreamRenderer.finalize();
+    activeStreamRenderer = null;
     if (activeCursorEl?.parentNode) activeCursorEl.parentNode.removeChild(activeCursorEl);
     activeCursorEl = null;
     activeOutputContent = null;
@@ -1135,6 +1188,25 @@ if (isRemoteMode && networkClient) {
     remoteSpeakBuffer = "";
     remoteFullBuffer = "";
     terminal.setBadgeState("error");
+  });
+
+  networkClient.onStateChange((state) => {
+    if (state === "connected" || !remoteTurnActive) return;
+    remoteTurnActive = false;
+    const completion = completionState({});
+    conversationHistory.push({ role: "assistant", text: remoteFullBuffer, completion, timestamp: Date.now() });
+    syncToManager();
+    if (activeStreamRenderer) activeStreamRenderer.finalize();
+    if (activeCursorEl?.parentNode) activeCursorEl.parentNode.removeChild(activeCursorEl);
+    activeStreamRenderer = null;
+    activeOutputContent = null;
+    activeCursorEl = null;
+    remoteFullBuffer = "";
+    remoteSpeakBuffer = "";
+    recorder.cancel();
+    tts.stop();
+    terminal.appendCompletionLine(completion);
+    setUIState(completion.uiState);
   });
 }
 
@@ -1189,20 +1261,35 @@ ctx.registerPausable(
   reconnect.claimOwnership(section);
 
   if (st.uiState !== "streaming" && st.uiState !== "closing" && st.uiState !== "waiting_permission" && st.uiState !== "waiting_askuser") {
-    if (st.uiState === "done" || st.uiState === "error") {
+    if (st.uiState === "done" || st.uiState === "error" || st.completion) {
+      if (st.jarvisSessionId && st.jarvisSessionId !== sessionManager.getActiveSessionId()) {
+        const owner = sessionManager.getSession(st.jarvisSessionId);
+        if (owner) {
+          owner.sessionId = st.sessionId || owner.sessionId;
+          owner.conversationHistory = st.conversationHistory || [];
+          owner.fullBuffer = st.fullBuffer || st.buffer || "";
+          owner.status = completionState(st.completion || st).uiState;
+          owner._notifyBadge = true;
+          sessionManager.saveImmediate();
+          tabs.render();
+        }
+        reconnect.clearStreamState();
+        return;
+      }
       currentSessionId = st.sessionId || currentSessionId;
       if (st.buffer) {
         terminal.show();
         const recoverContent = el("div", { color: T.text });
         recoverContent.appendChild(markdownRenderer.renderMarkdown(st.buffer));
         terminal.getOutputArea().appendChild(recoverContent);
-        terminal.appendCompletionLine(st.exitCode);
+        terminal.appendCompletionLine(completionState(st.completion || st));
         terminal.addMessageCopyIcon(recoverContent, () => st.buffer);
       }
       conversationHistory = st.conversationHistory || conversationHistory;
+      fullBuffer = st.fullBuffer || st.buffer || fullBuffer;
       reconnect.clearStreamState();
       syncToManager();
-      setUIState(st.exitCode === 0 ? "done" : "error");
+      setUIState(completionState(st.completion || st).uiState);
     }
     return;
   }
@@ -1210,6 +1297,7 @@ ctx.registerPausable(
   // Active streaming — reconnect
   currentSessionId = st.sessionId || currentSessionId;
   conversationHistory = st.conversationHistory || conversationHistory;
+  fullBuffer = st.fullBuffer || st.buffer || fullBuffer;
   currentDetectedLang = st.detectedLang || null;
   processMgr.process = st.process;
   if (st.jarvisSessionId) {

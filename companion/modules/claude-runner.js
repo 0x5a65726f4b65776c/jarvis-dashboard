@@ -9,7 +9,9 @@ const path = require("path");
 const { expandPath, stripAnsi } = require("./utils");
 
 class ClaudeRunner {
-  constructor(config) {
+  constructor(config, { spawnProcess = spawn } = {}) {
+    this._spawn = spawnProcess;
+    this._activeRun = null;
     this._claudePath = config.claudePath || null;
     this._projectPath = config.projectPath || null;
     this._model = config.model || null;
@@ -148,21 +150,37 @@ class ClaudeRunner {
     delete childEnv.CLAUDE_CODE_ENTRYPOINT;
     delete childEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
 
-    this._activeProcess = spawn(this._claudePath, args, {
-      cwd,
-      env: childEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    // Send user message as stream-json on stdin (do NOT close stdin — needed for control_response)
-    this._activeProcess.stdin.write(JSON.stringify({
-      type: "user",
-      message: { role: "user", content: [{ type: "text", text }] },
-    }) + "\n");
+    const run = { settled: false, resultReceived: false, resultFailed: null };
+    this._activeRun = run;
+    let proc;
+    try {
+      proc = this._spawn(this._claudePath, args, {
+        cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (err) {
+      run.settled = true;
+      this._activeProcess = null;
+      onError(err);
+      return { cancel: () => {} };
+    }
+    this._activeProcess = proc;
+    const current = () => this._activeRun === run && !run.settled;
+    const handleMessage = (msg) => {
+      if (msg.type === "result") {
+        run.resultReceived = true;
+        if (msg.is_error === true || (typeof msg.subtype === "string" && msg.subtype !== "success")) {
+          run.resultFailed = true;
+        } else if (run.resultFailed !== true && (msg.is_error === false || msg.subtype === "success")) {
+          run.resultFailed = false;
+        }
+      }
+      this._handleStreamMessage(msg, onDelta, onPermissionRequest, onQuestionRequest);
+    };
 
     let textBuffer = "";
 
-    this._activeProcess.stdout.on("data", (chunk) => {
+    proc.stdout.on("data", (chunk) => {
+      if (!current()) return;
       textBuffer += stripAnsi(chunk.toString("utf8"));
 
       // Parse newline-delimited JSON (stream-json format)
@@ -174,7 +192,7 @@ class ClaudeRunner {
         if (!trimmed) continue;
         try {
           const msg = JSON.parse(trimmed);
-          this._handleStreamMessage(msg, onDelta, onPermissionRequest, onQuestionRequest);
+          handleMessage(msg);
         } catch {
           // Non-JSON output — send as raw text
           if (trimmed) onDelta(trimmed);
@@ -182,19 +200,20 @@ class ClaudeRunner {
       }
     });
 
-    this._activeProcess.stderr.on("data", (chunk) => {
+    proc.stderr.on("data", (chunk) => {
+      if (!current()) return;
       const text = stripAnsi(chunk.toString("utf8")).trim();
       if (text) onDelta(`[stderr] ${text}`);
     });
 
-    this._activeProcess.on("close", (exitCode) => {
-      this._activeProcess = null;
+    proc.on("close", (exitCode, signal) => {
+      if (!current()) return;
 
       // Process remaining buffer
       if (textBuffer.trim()) {
         try {
           const msg = JSON.parse(textBuffer.trim());
-          this._handleStreamMessage(msg, onDelta, onPermissionRequest, onQuestionRequest);
+          handleMessage(msg);
         } catch {
           if (textBuffer.trim()) onDelta(textBuffer.trim());
         }
@@ -204,16 +223,31 @@ class ClaudeRunner {
       const newId = this._sessionId ?? this._detectNewSession(snapshot);
       if (newId) this._sessionId = newId;
 
-      onEnd({ exitCode: exitCode ?? 0, sessionId: this._sessionId });
+      run.settled = true;
+      this._activeProcess = null;
+      onEnd({ exitCode: exitCode ?? null, signal: signal || null, sessionId: this._sessionId,
+        resultReceived: run.resultReceived, resultFailed: run.resultFailed });
     });
 
-    this._activeProcess.on("error", (err) => {
+    const fail = (err) => {
+      if (!current()) return;
+      run.settled = true;
       this._activeProcess = null;
+      try { proc.kill("SIGTERM"); } catch {}
       onError(new Error(`claude error: ${err.message}`));
-    });
+    };
+    proc.on("error", fail);
+    proc.stdin.on("error", fail);
+    // Install error handlers before writing; a broken pipe is a failed attempt.
+    try {
+      proc.stdin.write(JSON.stringify({
+        type: "user",
+        message: { role: "user", content: [{ type: "text", text }] },
+      }) + "\n");
+    } catch (err) { fail(err); }
 
     return {
-      cancel: () => this.cancel(),
+      cancel: () => { if (current()) this.cancel(); },
     };
   }
 
@@ -247,7 +281,7 @@ class ClaudeRunner {
       onDelta(msg.delta.text);
     } else if (msg.type === "assistant" && msg.message?.content) {
       // Full message format — skip, we already got deltas
-    } else if (msg.type === "result" && msg.result) {
+    } else if (msg.type === "result") {
       // Close stdin so the process exits cleanly
       if (this._activeProcess?.stdin?.writable) {
         this._activeProcess.stdin.end();

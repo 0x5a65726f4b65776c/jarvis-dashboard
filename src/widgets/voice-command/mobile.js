@@ -33,6 +33,7 @@ const [
   { createReconnectManager },
   { createSessionTabs },
   { createProjectSelector },
+  { completionState, historyCompletion },
 ] = await Promise.all([
   loadSub("core/utilities.js"),
   loadSub("core/state-machine.js"),
@@ -47,6 +48,7 @@ const [
   loadSub("core/reconnect-manager.js"),
   loadSub("core/session-tabs.js"),
   loadSub("core/project-selector.js"),
+  loadSub("core/stream-handler.js"),
 ]);
 
 // ── Shared state ──
@@ -54,6 +56,7 @@ let fullBuffer = "";
 let currentSessionId = null;
 let currentDetectedLang = null;
 let conversationHistory = [];
+let remoteTurnActive = false;
 let activeJarvisSessionId = null;
 
 // ── Session manager ref ──
@@ -154,12 +157,13 @@ const cards = createCardRenderer({
 // ── Create project selector and session tabs ──
 const projSelector = createProjectSelector({
   onSelect: (idx) => {
+    if (guardRemoteTurn()) return;
     const current = sessionManager.getActiveSession();
     if (current) { current.projectIndex = idx; sessionManager.saveImmediate(); }
     updateProjectTag();
     projSelector.update();
   },
-  isDisabled: () => uiState === "streaming" || uiState === "recording" || uiState === "transcribing",
+  isDisabled: () => remoteTurnActive || uiState === "streaming" || uiState === "recording" || uiState === "transcribing",
 });
 
 const tabs = createSessionTabs({
@@ -192,8 +196,8 @@ function setUIState(newState) {
     newState === "streaming" ? "running" : newState === "done" ? "success" : newState === "error" ? "error" : "idle"
   );
   const inputBusy = (newState === "recording" || newState === "transcribing" || newState === "launching");
-  textInput.setDisabled(inputBusy);
-  const selectorBusy = (newState === "streaming" || newState === "recording" || newState === "transcribing");
+  textInput.setDisabled(inputBusy || remoteTurnActive);
+  const selectorBusy = remoteTurnActive || newState === "streaming" || newState === "recording" || newState === "transcribing";
   projSelector.setEnabled(!selectorBusy);
   updateSessionIndicator();
 }
@@ -202,7 +206,7 @@ function setUIState(newState) {
 const hasSessions = sessionManager.getAllSessions().length > 0;
 if (conversationHistory.length > 0) {
   replayTerminalForActiveSession();
-  setUIState("done");
+  setUIState(historyCompletion(conversationHistory).uiState);
 } else if (hasSessions) {
   // Show terminal even if active session has no messages (user can switch tabs)
   terminal.show();
@@ -249,35 +253,38 @@ function replayTerminalForActiveSession() {
       const txt = turn.text;
       terminal.addMessageCopyIcon(assistantDiv, () => txt);
       outputArea.appendChild(assistantDiv);
-      if (terminal.showCompletionLabel) {
-        outputArea.appendChild(el("div", {
-          color: T.accent, opacity: "0.6", marginTop: "8px",
-          fontSize: isNarrow ? "10px" : "11px", letterSpacing: "1px",
-        }, `[${terminal.completionLabel}]`));
-      }
+      terminal.appendCompletionLine(completionState(turn.completion));
     }
   }
   if (conversationHistory.length > 0) {
     terminal.show();
-    terminal.setBadgeState("success");
+    terminal.setBadgeState(historyCompletion(conversationHistory).badgeState);
   }
 }
 
 // ── Session management ──
+function guardRemoteTurn() {
+  if (!remoteTurnActive) return false;
+  new Notice("Wait for the current response to finish or stop before changing sessions or starting another request.", 3500);
+  return true;
+}
+
 function switchToSession(id) {
+  if (guardRemoteTurn()) return;
   syncToManager();
   sessionManager.setActiveSession(id);
   syncFromManager();
   replayTerminalForActiveSession();
   updateSessionIndicator();
   if (conversationHistory.length > 0) {
-    setUIState("done");
+    setUIState(historyCompletion(conversationHistory).uiState);
   } else {
     setUIState("idle");
   }
 }
 
 function createNewSession(projectIndex) {
+  if (guardRemoteTurn()) return;
   syncToManager();
   sessionManager.createSession(projectIndex);
   syncFromManager();
@@ -293,6 +300,7 @@ function createNewSession(projectIndex) {
 }
 
 function closeSession(id) {
+  if (guardRemoteTurn()) return;
   if (id === activeJarvisSessionId && (uiState === "streaming" || uiState === "transcribing")) {
     networkClient?.sendCancel();
     tts.stop();
@@ -306,7 +314,7 @@ function closeSession(id) {
   replayTerminalForActiveSession();
   updateSessionIndicator();
   if (conversationHistory.length > 0) {
-    setUIState("done");
+    setUIState(historyCompletion(conversationHistory).uiState);
   } else {
     terminal.getOutputArea().innerHTML = "";
     terminal.hide(false);
@@ -332,12 +340,15 @@ function updateSessionIndicator() {
 
 // ── Recording ──
 function beginRecording() {
+  if (guardRemoteTurn()) return;
+  remoteTurnActive = true;
   tts.stop();
   recorder.start().then(() => {
     if (terminal.getOutputArea().textContent.trim()) terminal.show();
     setUIState("recording");
     arcReactor.startTimer();
   }).catch(err => {
+    remoteTurnActive = false;
     new Notice("Microphone error: " + err.message, 5000);
     setUIState("error");
   });
@@ -399,7 +410,7 @@ arcReactor.el.btnContainer.addEventListener("click", async () => {
     tts.stop();
     networkClient.sendCancel();
     terminal.appendCancelLine();
-    setUIState("done");
+    setUIState(historyCompletion(conversationHistory).uiState);
   }
   tts.resumeAudioContext();
 });
@@ -407,6 +418,7 @@ arcReactor.el.btnContainer.addEventListener("click", async () => {
 // ── Text input handler ──
 textInput.onSend((text) => {
   if (!text) return;
+  if (guardRemoteTurn()) return;
   if (uiState === "streaming") {
     networkClient?.sendCancel();
     tts.stop();
@@ -421,6 +433,7 @@ textInput.onSend((text) => {
   terminal.appendEchoLine(text, false, null);
   conversationHistory.push({ role: "user", text, timestamp: Date.now() });
   syncToManager();
+  remoteTurnActive = true;
   setUIState("streaming");
   terminal.setBadgeState("running");
   networkClient.sendTextCommand(text, currentSessionId, getActiveProjectPath());
@@ -439,6 +452,7 @@ if (networkClient) {
   const outputArea = terminal.getOutputArea();
 
   networkClient.on("transcription", (msg) => {
+    if (!remoteTurnActive) return;
     currentDetectedLang = msg.detectedLang || null;
     terminal.show();
     const echoLine = terminal.appendEchoLine(msg.text, false, null);
@@ -459,6 +473,7 @@ if (networkClient) {
   });
 
   networkClient.on("stream_delta", (msg) => {
+    if (!remoteTurnActive) return;
     remoteFullBuffer += msg.text;
     fullBuffer += msg.text;
     if (!activeOutputContent) {
@@ -491,6 +506,9 @@ if (networkClient) {
   });
 
   networkClient.on("stream_end", (msg) => {
+    if (!remoteTurnActive) return;
+    remoteTurnActive = false;
+    const completion = completionState(msg);
     if (activeCursorEl?.parentNode) activeCursorEl.parentNode.removeChild(activeCursorEl);
     activeCursorEl = null;
     if (msg.sessionId) currentSessionId = msg.sessionId;
@@ -499,30 +517,26 @@ if (networkClient) {
       const bufCopy = remoteFullBuffer;
       terminal.addMessageCopyIcon(activeOutputContent, () => bufCopy);
     }
-    if (remoteFullBuffer) conversationHistory.push({ role: "assistant", text: remoteFullBuffer, timestamp: Date.now() });
+    conversationHistory.push({ role: "assistant", text: remoteFullBuffer, completion, timestamp: Date.now() });
     syncToManager();
     if (mobileTtsMode !== "server" && tts.isEnabled && !tts.isMuted && remoteSpeakBuffer.trim()) {
       tts.speak(stripMarkdown(remoteSpeakBuffer.trim()), currentDetectedLang);
     }
     remoteSpeakBuffer = "";
-    if (terminal.showCompletionLabel) {
-      outputArea.appendChild(el("div", {
-        color: T.accent, opacity: "0.6", marginTop: "8px",
-        fontSize: isNarrow ? "10px" : "11px", letterSpacing: "1px",
-      }, `[${terminal.completionLabel}]`));
-    }
+    terminal.appendCompletionLine(completion);
     outputArea.scrollTop = outputArea.scrollHeight;
     remoteFullBuffer = "";
     activeOutputContent = null;
     activeStreamRenderer = null;
-    setUIState("done");
-    terminal.setBadgeState("success");
+    setUIState(completion.uiState);
+    terminal.setBadgeState(completion.badgeState);
   });
 
   networkClient.on("tts_audio", (msg) => { tts.enqueueServerAudio(msg.data, msg.sampleRate); });
   networkClient.on("tts_end", () => {});
 
   networkClient.on("permission_request", (msg) => {
+    if (!remoteTurnActive) return;
     if (!activeOutputContent) {
       terminal.show();
       activeOutputContent = el("div", { color: T.text });
@@ -532,6 +546,7 @@ if (networkClient) {
   });
 
   networkClient.on("question_request", (msg) => {
+    if (!remoteTurnActive) return;
     if (!activeOutputContent) {
       terminal.show();
       activeOutputContent = el("div", { color: T.text });
@@ -541,6 +556,13 @@ if (networkClient) {
   });
 
   networkClient.on("error", (msg) => {
+    if (!remoteTurnActive) return;
+    remoteTurnActive = false;
+    const completion = completionState({ resultFailed: true });
+    conversationHistory.push({ role: "assistant", text: remoteFullBuffer, completion, timestamp: Date.now() });
+    syncToManager();
+    if (activeStreamRenderer) activeStreamRenderer.finalize();
+    activeStreamRenderer = null;
     if (activeCursorEl?.parentNode) activeCursorEl.parentNode.removeChild(activeCursorEl);
     activeCursorEl = null;
     activeOutputContent = null;
@@ -549,6 +571,25 @@ if (networkClient) {
     remoteSpeakBuffer = "";
     remoteFullBuffer = "";
     terminal.setBadgeState("error");
+  });
+
+  networkClient.onStateChange((state) => {
+    if (state === "connected" || !remoteTurnActive) return;
+    remoteTurnActive = false;
+    const completion = completionState({});
+    conversationHistory.push({ role: "assistant", text: remoteFullBuffer, completion, timestamp: Date.now() });
+    syncToManager();
+    if (activeStreamRenderer) activeStreamRenderer.finalize();
+    if (activeCursorEl?.parentNode) activeCursorEl.parentNode.removeChild(activeCursorEl);
+    activeStreamRenderer = null;
+    activeOutputContent = null;
+    activeCursorEl = null;
+    remoteFullBuffer = "";
+    remoteSpeakBuffer = "";
+    recorder.cancel();
+    tts.stop();
+    terminal.appendCompletionLine(completion);
+    setUIState(completion.uiState);
   });
 }
 
