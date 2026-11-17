@@ -150,7 +150,8 @@ class ClaudeRunner {
     delete childEnv.CLAUDE_CODE_ENTRYPOINT;
     delete childEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
 
-    const run = { settled: false, resultReceived: false, resultFailed: null };
+    const run = { settled: false, resultReceived: false, resultFailed: null,
+      finalText: null, runtimeSessionId: null, startedAt: new Date().toISOString() };
     this._activeRun = run;
     let proc;
     try {
@@ -168,6 +169,10 @@ class ClaudeRunner {
     const handleMessage = (msg) => {
       if (msg.type === "result") {
         run.resultReceived = true;
+        // Select the terminal provider result, not concatenated assistant drafts,
+        // tool chatter, hook refusals or stderr accumulated during the run.
+        run.finalText = typeof msg.result === "string" ? msg.result : null;
+        run.runtimeSessionId = typeof msg.session_id === "string" ? msg.session_id : null;
         if (msg.is_error === true || (typeof msg.subtype === "string" && msg.subtype !== "success")) {
           run.resultFailed = true;
         } else if (run.resultFailed !== true && (msg.is_error === false || msg.subtype === "success")) {
@@ -220,13 +225,15 @@ class ClaudeRunner {
       }
 
       // Detect session ID
-      const newId = this._sessionId ?? this._detectNewSession(snapshot);
+      const newId = run.runtimeSessionId ?? this._sessionId ?? this._detectNewSession(snapshot);
       if (newId) this._sessionId = newId;
 
       run.settled = true;
       this._activeProcess = null;
       onEnd({ exitCode: exitCode ?? null, signal: signal || null, sessionId: this._sessionId,
-        resultReceived: run.resultReceived, resultFailed: run.resultFailed });
+        resultReceived: run.resultReceived, resultFailed: run.resultFailed,
+        finalText: run.finalText, runtimeSessionId: run.runtimeSessionId,
+        projectPath: path.resolve(cwd), startedAt: run.startedAt });
     });
 
     const fail = (err) => {

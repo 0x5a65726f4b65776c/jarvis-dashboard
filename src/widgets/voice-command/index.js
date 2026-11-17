@@ -22,6 +22,15 @@ async function loadSub(rel) {
   return new Function("ctx", code)(ctx);
 }
 
+async function loadDeliveryReview() {
+  const code = await ctx._adapter.readFile(ctx._srcDir + "widgets/voice-command/desktop/delivery-review.js");
+  const module = { exports: {} };
+  new Function("require", "module", "exports", code)(require, module, module.exports);
+  return module.exports;
+}
+
+const { verifyDelivery } = await loadDeliveryReview();
+
 // ── Load all modules ──
 const [
   { stripAnsi, stripMarkdown },
@@ -33,7 +42,7 @@ const [
   { createTerminalPanel },
   { createRecorder },
   { createTTSAdapter },
-  { createStreamHandler, completionState, historyCompletion },
+  { createStreamHandler, completionState, historyCompletion, createRemoteDeliveryBuffer },
   { createCardRenderer },
   { createReconnectManager },
   { createProcessManager },
@@ -63,6 +72,7 @@ let currentSessionId = null;
 let currentDetectedLang = null;
 let conversationHistory = [];
 let remoteTurnActive = false;
+let resetRemoteDelivery = () => {};
 let preSpawnJsonlSet = null;
 let activeJarvisSessionId = null;
 
@@ -397,6 +407,7 @@ function beginRecording() {
   if (guardRemoteTurn()) return;
   tts.stop();
   if (isRemoteMode) {
+    resetRemoteDelivery();
     remoteTurnActive = true;
     recorder.start().then(() => {
       if (terminal.getOutputArea().textContent.trim()) terminal.show();
@@ -491,6 +502,7 @@ textInput.onSend((text) => {
     const echoLine = terminal.appendEchoLine(text, false, null);
     conversationHistory.push({ role: "user", text, timestamp: Date.now() });
     syncToManager();
+    resetRemoteDelivery();
     remoteTurnActive = true;
     setUIState("streaming");
     terminal.setBadgeState("running");
@@ -672,6 +684,9 @@ function launchClaudeInPanel(text) {
     conversationHistory: [...conversationHistory],
     fullBuffer,
     preSpawnJsonlSet,
+    projectPath: proc._jarvisDelivery?.projectPath,
+    startedAt: proc._jarvisDelivery?.startedAt,
+    submittedPrompt: messageText,
   });
 
   const _ownerSession = sessionManager.getSession(activeJarvisSessionId);
@@ -825,6 +840,9 @@ function attachDelegates(st, oc, to, ce, getTurnBuffer, setTurnBuffer) {
 
 function attachProcessHandlers(proc) {
   let finished = false;
+  const runToken = {};
+  const attached = reconnect.getActiveStream();
+  if (attached?.process === proc) attached._deliveryRun = runToken;
   const onChunk = (chunk) => {
     const st = reconnect.getActiveStream();
     if (finished || !st || st.process !== proc) return;
@@ -835,13 +853,8 @@ function attachProcessHandlers(proc) {
       if (!line.trim()) continue;
       try {
         const evt = JSON.parse(line);
-        // Text delta
-        if (evt.type === "stream_event" && evt.event?.type === "content_block_delta" && evt.event?.delta?.type === "text_delta") {
-          const txt = evt.event.delta.text;
-          st.buffer += txt;
-          if (st._onTextDelta) st._onTextDelta(txt);
-          else st.fullBuffer = (st.fullBuffer || "") + txt;
-        }
+        // Text deltas can include drafts, rejected finals and continuations.
+        // Only the terminal result is eligible for final review and delivery.
         // Tool-use start
         if (evt.type === "stream_event" && evt.event?.type === "content_block_start" && evt.event?.content_block?.type === "tool_use") {
           const block = evt.event.content_block;
@@ -886,6 +899,8 @@ function attachProcessHandlers(proc) {
         // Result
         if (evt.type === "result") {
           if (evt.session_id) st.sessionId = evt.session_id;
+          st.runtimeSessionId = typeof evt.session_id === "string" ? evt.session_id : null;
+          st.finalText = typeof evt.result === "string" ? evt.result : null;
           st.resultReceived = true;
           if (evt.is_error === true || (typeof evt.subtype === "string" && evt.subtype !== "success")) {
             st.resultFailed = true;
@@ -903,11 +918,6 @@ function attachProcessHandlers(proc) {
             st.uiState = "closing";
             if (st.process?.stdin?.writable) st.process.stdin.end();
           }
-        }
-        if (evt.type === "result" && evt.result && !st.buffer) {
-          st.buffer += evt.result;
-          if (st._onTextDelta) st._onTextDelta(evt.result);
-          else st.fullBuffer = (st.fullBuffer || "") + evt.result;
         }
         // Assistant event (AskUserQuestion, thinking)
         if (evt.type === "assistant" && evt.message?.content) {
@@ -936,19 +946,16 @@ function attachProcessHandlers(proc) {
           }
         }
       } catch (e) {
-        console.log("[JARVIS-DEBUG] JSON parse failed:", line.substring(0, 1000), e.message);
+        console.warn("[JARVIS] Ignored malformed process event");
       }
     }
   };
   proc.stdout.on("data", onChunk);
 
-  proc.stderr.on("data", (chunk) => {
-    const st = reconnect.getActiveStream();
-    if (finished || !st || st.process !== proc) return;
-    if (st?._onStderr) st._onStderr(chunk.toString("utf8"));
-  });
+  // Drain stderr without presenting unreviewed provider output as an answer.
+  proc.stderr.on("data", () => {});
 
-  proc.on("close", (code, signal) => {
+  proc.on("close", async (code, signal) => {
     const st = reconnect.getActiveStream();
     if (finished || !st || st.process !== proc) return;
     if (st.lineBuf) onChunk("\n");
@@ -961,7 +968,7 @@ function attachProcessHandlers(proc) {
         st.resultFailed = null;
         st.completion = null;
         st.signal = null;
-        const cwd = storage.expandPath(storage.getActiveProjectPath()) || app.vault.adapter.basePath;
+        const cwd = st.projectPath || storage.expandPath(storage.getActiveProjectPath()) || app.vault.adapter.basePath;
         const newProc = processMgr.spawnRetryProcess(st, cwd);
         if (newProc) attachProcessHandlers(newProc);
         return;
@@ -969,6 +976,20 @@ function attachProcessHandlers(proc) {
       if (st.uiState === "waiting_permission" || st.uiState === "waiting_askuser") return;
       st.exitCode = code;
       st.signal = signal || null;
+      if (code === 0 && !signal && st.resultReceived === true && st.resultFailed === false) {
+        st.uiState = "reviewing";
+        let cleared;
+        try { cleared = await verifyDelivery(st, st.submittedPrompt); } catch {}
+        // Cancellation, session replacement and retries invalidate a pending
+        // review even when the underlying Python check eventually succeeds.
+        if (reconnect.getActiveStream() !== st || st._deliveryRun !== runToken || st.uiState !== "reviewing") return;
+        st.deliveryReview = cleared ? "cleared" : "blocked";
+        if (cleared) {
+          st.buffer = cleared.text;
+          if (st._onTextDelta) st._onTextDelta(cleared.text);
+          else st.fullBuffer = (st.fullBuffer || "") + cleared.text;
+        }
+      }
       st.completion = completionState(st);
       st.uiState = st.completion.uiState;
       st.pendingInteractions.forEach(i => { if (i.type === "askuser" && i.status === "pending") i.status = "expired"; });
@@ -1065,6 +1086,8 @@ function handleToolComplete(st, block, parsedInput) {
 if (isRemoteMode && networkClient) {
   let remoteFullBuffer = "";
   let remoteSpeakBuffer = "";
+  const remoteDelivery = createRemoteDeliveryBuffer();
+  resetRemoteDelivery = () => remoteDelivery.reset();
   let activeOutputContent = null;
   let activeCursorEl = null;
   let activeStreamRenderer = null;
@@ -1093,39 +1116,25 @@ if (isRemoteMode && networkClient) {
 
   networkClient.on("stream_delta", (msg) => {
     if (!remoteTurnActive) return;
-    remoteFullBuffer += msg.text;
-    fullBuffer += msg.text;
-    if (!activeOutputContent) {
-      terminal.show();
-      activeOutputContent = el("div", { color: T.text });
-      outputArea.appendChild(activeOutputContent);
-      activeStreamRenderer = markdownRenderer.createStreamRenderer(activeOutputContent);
-      activeCursorEl = el("span", {
-        display: "inline-block", width: "8px", height: isNarrow ? "14px" : "16px",
-        background: T.accent, animation: "jarvisCursorBlink 0.8s step-end infinite",
-        verticalAlign: "middle", marginLeft: "2px",
-      });
-      outputArea.appendChild(activeCursorEl);
-      terminal.setBadgeState("running");
-    }
-    activeStreamRenderer.append(msg.text);
-    outputArea.scrollTop = outputArea.scrollHeight;
-    if (remoteTtsMode === "local" && tts.isEnabled && !tts.isMuted) {
-      remoteSpeakBuffer += msg.text;
-      const sentenceEnd = /^([\s\S]*?[.!?])(\s+|\n\n)/;
-      let match;
-      while ((match = sentenceEnd.exec(remoteSpeakBuffer)) !== null) {
-        const sentence = match[1].trim();
-        if (sentence) tts.speak(stripMarkdown(sentence), currentDetectedLang);
-        remoteSpeakBuffer = remoteSpeakBuffer.slice(match[0].length);
-      }
-    }
+    remoteDelivery.append(msg);
   });
 
   networkClient.on("stream_end", (msg) => {
     if (!remoteTurnActive) return;
     remoteTurnActive = false;
-    const completion = completionState(msg);
+    const released = remoteDelivery.finish(msg);
+    const completion = released.completion;
+    remoteFullBuffer = released.text;
+    if (remoteFullBuffer) {
+      fullBuffer += remoteFullBuffer;
+      if (!activeOutputContent) {
+        terminal.show();
+        activeOutputContent = el("div", { color: T.text });
+        outputArea.appendChild(activeOutputContent);
+      }
+      if (!activeStreamRenderer) activeStreamRenderer = markdownRenderer.createStreamRenderer(activeOutputContent);
+      activeStreamRenderer.append(remoteFullBuffer);
+    }
     if (activeCursorEl?.parentNode) activeCursorEl.parentNode.removeChild(activeCursorEl);
     activeCursorEl = null;
     if (msg.sessionId) { currentSessionId = msg.sessionId; updateSessionIndicator(); }
@@ -1136,8 +1145,8 @@ if (isRemoteMode && networkClient) {
     }
     conversationHistory.push({ role: "assistant", text: remoteFullBuffer, completion, timestamp: Date.now() });
     syncToManager();
-    if (remoteTtsMode === "local" && tts.isEnabled && !tts.isMuted && remoteSpeakBuffer.trim()) {
-      tts.speak(stripMarkdown(remoteSpeakBuffer.trim()), currentDetectedLang);
+    if (remoteTtsMode === "local" && tts.isEnabled && !tts.isMuted && remoteFullBuffer.trim()) {
+      tts.speak(stripMarkdown(remoteFullBuffer), currentDetectedLang);
     }
     remoteSpeakBuffer = "";
     terminal.appendCompletionLine(completion);
@@ -1149,8 +1158,20 @@ if (isRemoteMode && networkClient) {
     terminal.setBadgeState(completion.badgeState);
   });
 
-  networkClient.on("tts_audio", (msg) => { tts.enqueueServerAudio(msg.data, msg.sampleRate); });
+  networkClient.on("tts_audio", (msg) => {
+    if (remoteDelivery.acceptsAudio(msg)) tts.enqueueServerAudio(msg.data, msg.sampleRate);
+  });
   networkClient.on("tts_end", () => {});
+  networkClient.on("turn_cancelled", () => {
+    remoteTurnActive = false;
+    remoteDelivery.reset();
+    remoteFullBuffer = "";
+    remoteSpeakBuffer = "";
+    if (activeCursorEl?.parentNode) activeCursorEl.parentNode.removeChild(activeCursorEl);
+    activeCursorEl = null;
+    activeOutputContent = null;
+    activeStreamRenderer = null;
+  });
 
   networkClient.on("permission_request", (msg) => {
     if (!remoteTurnActive) return;
@@ -1175,8 +1196,9 @@ if (isRemoteMode && networkClient) {
   networkClient.on("error", (msg) => {
     if (!remoteTurnActive) return;
     remoteTurnActive = false;
+    remoteDelivery.reset();
     const completion = completionState({ resultFailed: true });
-    conversationHistory.push({ role: "assistant", text: remoteFullBuffer, completion, timestamp: Date.now() });
+    conversationHistory.push({ role: "assistant", text: "", completion, timestamp: Date.now() });
     syncToManager();
     if (activeStreamRenderer) activeStreamRenderer.finalize();
     activeStreamRenderer = null;
@@ -1191,10 +1213,12 @@ if (isRemoteMode && networkClient) {
   });
 
   networkClient.onStateChange((state) => {
+    if (state !== "connected") remoteDelivery.reset();
     if (state === "connected" || !remoteTurnActive) return;
     remoteTurnActive = false;
+    remoteDelivery.reset();
     const completion = completionState({});
-    conversationHistory.push({ role: "assistant", text: remoteFullBuffer, completion, timestamp: Date.now() });
+    conversationHistory.push({ role: "assistant", text: "", completion, timestamp: Date.now() });
     syncToManager();
     if (activeStreamRenderer) activeStreamRenderer.finalize();
     if (activeCursorEl?.parentNode) activeCursorEl.parentNode.removeChild(activeCursorEl);
@@ -1218,7 +1242,7 @@ ctx.cleanups.push(() => {
     tts.stop();
   } else {
     const st = reconnect.getActiveStream();
-    if (st && (st.uiState === "streaming" || st.uiState === "closing")) {
+    if (st && (st.uiState === "streaming" || st.uiState === "closing" || st.uiState === "reviewing")) {
       reconnect.releaseOwnership(section);
     } else {
       processMgr.kill();
@@ -1236,7 +1260,7 @@ let cleanupId = setInterval(() => {
       tts.stop();
     } else {
       const st = reconnect.getActiveStream();
-      if (st && (st.uiState === "streaming" || st.uiState === "closing")) {
+      if (st && (st.uiState === "streaming" || st.uiState === "closing" || st.uiState === "reviewing")) {
         reconnect.releaseOwnership(section);
       } else {
         processMgr.kill();
@@ -1260,7 +1284,7 @@ ctx.registerPausable(
 
   reconnect.claimOwnership(section);
 
-  if (st.uiState !== "streaming" && st.uiState !== "closing" && st.uiState !== "waiting_permission" && st.uiState !== "waiting_askuser") {
+  if (st.uiState !== "streaming" && st.uiState !== "closing" && st.uiState !== "reviewing" && st.uiState !== "waiting_permission" && st.uiState !== "waiting_askuser") {
     if (st.uiState === "done" || st.uiState === "error" || st.completion) {
       if (st.jarvisSessionId && st.jarvisSessionId !== sessionManager.getActiveSessionId()) {
         const owner = sessionManager.getSession(st.jarvisSessionId);

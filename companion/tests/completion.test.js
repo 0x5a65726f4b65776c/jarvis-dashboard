@@ -186,7 +186,7 @@ test("detached local process and pipe errors retain one failed history record", 
   }
 });
 
-test("remote errors retain partial output and failure across history restoration", () => {
+test("remote errors discard unreviewed output and retain failure across history restoration", () => {
   for (const name of ["index.js", "mobile.js"]) {
     const source = fs.readFileSync(path.join(widget, name), "utf8");
     const start = source.indexOf('  networkClient.on("error", (msg) => {');
@@ -195,6 +195,7 @@ test("remote errors retain partial output and failure across history restoration
       let callback, saved, remoteTurnActive = true, remoteFullBuffer = "partial response", remoteSpeakBuffer = "", activeCursorEl = null;
       let activeOutputContent = null, activeStreamRenderer = { finalize() {} };
       const conversationHistory = [];
+      const remoteDelivery = { reset() {} };
       const networkClient = { on: (name, fn) => { callback = fn; } };
       const terminal = { appendErrorLine() {}, setBadgeState() {} };
       const syncToManager = () => { saved = JSON.parse(JSON.stringify(conversationHistory)); };
@@ -204,7 +205,7 @@ test("remote errors retain partial output and failure across history restoration
       return saved;
     `);
     const restored = run(completionState);
-    assert.equal(restored[0].text, "partial response", name);
+    assert.equal(restored[0].text, "", name);
     assert.equal(historyCompletion(restored).status, "failed", name);
   }
 });
@@ -257,6 +258,7 @@ test("disconnect releases remote ownership as unknown and does not replay", () =
       let callback, saved, remoteTurnActive = true, remoteFullBuffer = "partial response", remoteSpeakBuffer = "";
       let activeOutputContent = null, activeCursorEl = null, activeStreamRenderer = { finalize() {} };
       const conversationHistory = [];
+      const remoteDelivery = { reset() {} };
       const networkClient = { onStateChange(fn) { callback=fn; } };
       const recorder = {cancel(){}}, tts = {stop(){}}, terminal = {appendCompletionLine(){}};
       const syncToManager = () => { saved = JSON.parse(JSON.stringify(conversationHistory)); };
@@ -269,7 +271,7 @@ test("disconnect releases remote ownership as unknown and does not replay", () =
     const result = run(completionState);
     assert.equal(result.remoteTurnActive, false, name);
     assert.equal(result.saved.length, 1, name);
-    assert.equal(result.saved[0].text, "partial response");
+    assert.equal(result.saved[0].text, "");
     assert.equal(historyCompletion(result.saved).status, "unknown");
   }
 });

@@ -21,6 +21,7 @@ function handleNewSession(msg, conn) {
 
 function handleAudioStart(msg, conn, pipeline, { companionConfig, networkConfig }) {
   conn.killPreviousRun();
+  conn.turnId = typeof msg.turnId === "string" ? msg.turnId : null;
   conn.restoreSession(msg.sessionId);
   if (msg.projectPath) conn.runner.setProjectPath(msg.projectPath);
   const ffmpegPath = companionConfig.ffmpegPath || "/opt/homebrew/bin/ffmpeg";
@@ -36,6 +37,7 @@ function handleAudioEnd(msg, conn, pipeline) {
 function handleTextCommand(msg, conn, pipeline) {
   if (!msg.text?.trim()) return;
   conn.killPreviousRun();
+  conn.turnId = typeof msg.turnId === "string" ? msg.turnId : null;
   conn.restoreSession(msg.sessionId);
   if (msg.projectPath) conn.runner.setProjectPath(msg.projectPath);
   pipeline.runClaude(msg.text.trim());

@@ -89,6 +89,26 @@ The measure is unchanged: can Nick act in under a minute without opening anythin
 else. A queue that requires him to open a list is a queue that will not be drained,
 and this stack owns that, not him.
 
+## Final delivery and recursive learning
+
+The owning orchestrator and Hermes are the final check before a result reaches Nick.
+Follow `doctrine/agent_delivery.md` (contract `2026-11-17.1`). Workers return evidence,
+outcome and a learning disposition to their owning orchestrator. The orchestrator fixes
+in-scope defects, records lessons and verifies acceptance; the independent `hermes-reviewer`
+checks the exact proposed reply, material omissions and supporting evidence. Stage and
+clear the delivery through `scripts/agent_gate.py` before replying or delivering an artifact.
+A changed reply, artifact or instruction version requires fresh review. Repair what can be
+repaired internally; surface only the result, a material consequence, or a decision Nick owns.
+
+A lesson is installed only with a changed authoritative surface and an executed verification
+receipt. Later validation needs a matching runtime context receipt and a distinct later run;
+recurrence reopens the mechanism. Preserve failures and uncertainty. Do not turn a ledger
+label into proof. The runtime fidelity manifest must match definitions, skills and shared
+instructions; regenerate from the authoritative sources, then refresh context after an
+in-session instruction change. Routine authorized corrections do not need repeat approval.
+Changes to permissions, principal-set identity, entity boundaries or external commitments
+still require the applicable authority. The quality gate grants no business permission.
+
 ## Closing the session
 
 **The goal of every session is to close it.** Finish the task, write down what was learned,
@@ -181,7 +201,7 @@ Hierarchy: Stewardship → Ownership → Capital Allocation → Systems → Oper
 - Every message this stack composes ends with `doctrine/signature.html` -- the signature
   table, the inline logo at `cid:atg-logo`, and the attribution line naming the drafting
   agent and date. Build it with `scripts/compose_mail.py`, never by hand.
-- Display times in EDT, never Z.
+- Convert each timestamp instant to America/New_York before displaying it; derive EST or EDT from that event date, never relabel UTC or subtract a fixed offset. Use the repository time formatter where available.
 - Relationship management and congratulations lead an email; business follows.
 - A phone number is never guessed.
 - No model identifier in commit messages, PR bodies, code comments, or any pushed artifact.
@@ -220,4 +240,6 @@ Hierarchy: Stewardship → Ownership → Capital Allocation → Systems → Oper
 decision, or conversion into a work-register item. Everything else goes to Archive immediately.
 `Waiting On` holds items blocked on someone else. Topic is a category for search, never a folder.
 Retrieval is search, not navigation.
+
+---
 

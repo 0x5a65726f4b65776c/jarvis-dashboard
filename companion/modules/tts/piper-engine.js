@@ -107,17 +107,18 @@ class PiperEngine extends BaseTTSEngine {
     if (effectiveSentenceSilence != null) args.push("--sentence-silence", String(effectiveSentenceSilence));
     args.push("--output_file", tmpFile);
 
-    this._activeProcess = spawn(this._binaryPath, args);
-    this._activeProcess.stdin.write(text);
-    this._activeProcess.stdin.end();
+    const proc = spawn(this._binaryPath, args);
+    this._activeProcess = proc;
+    const current = () => this._activeProcess === proc && this._epoch === epoch;
+    proc.stdin.write(text);
+    proc.stdin.end();
 
-    this._activeProcess.on("close", (code) => {
-      this._activeProcess = null;
-
-      if (this._epoch !== epoch) {
+    proc.on("close", (code) => {
+      if (!current()) {
         try { fs.unlinkSync(tmpFile); } catch {}
         return;
       }
+      this._activeProcess = null;
 
       if (code !== 0 || !fs.existsSync(tmpFile)) {
         if (this._onComplete) this._onComplete({ success: false });
@@ -143,9 +144,9 @@ class PiperEngine extends BaseTTSEngine {
       if (this._onComplete) this._onComplete({ success: true });
     });
 
-    this._activeProcess.on("error", () => {
+    proc.on("error", () => {
+      if (!current()) return;
       this._activeProcess = null;
-      if (this._epoch !== epoch) return;
       if (this._onComplete) this._onComplete({ success: false });
     });
   }

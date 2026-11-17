@@ -30,12 +30,16 @@ let reconnectAttempt = 0;
 let reconnectTimer = null;
 let heartbeatTimer = null;
 let pongTimer = null;
+let currentTurnId = null;
+let turnSequence = 0;
+const turnMessageTypes = new Set(["transcription", "stream_delta", "stream_end", "tts_audio", "tts_end", "permission_request", "question_request", "error"]);
 
 const handlers = {}; // type → [callback]
 const stateListeners = [];
 
 function setState(newState) {
   state = newState;
+  if (newState !== "connected") currentTurnId = null;
   for (const cb of stateListeners) { try { cb(state); } catch {} }
   // Report to native bridge (iOS)
   if (typeof window !== "undefined" && window.__reportConnectionStatus) {
@@ -105,6 +109,15 @@ function connect() {
     } catch {
       return;
     }
+    if (turnMessageTypes.has(msg.type)) {
+      if (!currentTurnId) return;
+      if (!msg.turnId) {
+        currentTurnId = null;
+        emit("error", { stage: "review", message: "The companion must be updated before reviewed replies can be delivered." });
+        return;
+      }
+      if (msg.turnId !== currentTurnId) return;
+    }
     emit(msg.type, msg);
     if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
   }
@@ -159,6 +172,20 @@ function sendBinary(data) {
     return true;
   }
   return false;
+}
+
+function startTurn(message) {
+  currentTurnId = `${Date.now()}-${++turnSequence}`;
+  const sent = send({ ...message, turnId: currentTurnId });
+  if (!sent) currentTurnId = null;
+  return sent;
+}
+
+function cancelTurn(type) {
+  const sent = send({ type, turnId: currentTurnId });
+  currentTurnId = null;
+  emit("turn_cancelled", {});
+  return sent;
 }
 
 // ── Reconnect with exponential backoff + jitter ──
@@ -250,11 +277,11 @@ return {
   disconnect,
   send,
   sendBinary,
-  sendAudioStart: (format, sampleRate, sessionId, projectPath) => send({ type: "audio_start", format, sampleRate, sessionId: sessionId || undefined, projectPath: projectPath || undefined }),
+  sendAudioStart: (format, sampleRate, sessionId, projectPath) => startTurn({ type: "audio_start", format, sampleRate, sessionId: sessionId || undefined, projectPath: projectPath || undefined }),
   sendAudioEnd: () => send({ type: "audio_end" }),
-  sendTextCommand: (text, sessionId, projectPath) => send({ type: "text_command", text, sessionId: sessionId || undefined, projectPath: projectPath || undefined }),
-  sendCancel: () => send({ type: "cancel" }),
-  sendNewSession: () => send({ type: "new_session" }),
+  sendTextCommand: (text, sessionId, projectPath) => startTurn({ type: "text_command", text, sessionId: sessionId || undefined, projectPath: projectPath || undefined }),
+  sendCancel: () => cancelTurn("cancel"),
+  sendNewSession: () => cancelTurn("new_session"),
   sendPing: () => send({ type: "ping" }),
   sendPermissionResponse: (requestId, behavior, updatedPermissions) => send({ type: "permission_response", requestId, behavior, ...(updatedPermissions ? { updatedPermissions } : {}) }),
   sendQuestionResponse: (requestId, answer) => send({ type: "question_response", requestId, answer }),

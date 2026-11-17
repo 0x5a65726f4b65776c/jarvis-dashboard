@@ -33,7 +33,7 @@ const [
   { createReconnectManager },
   { createSessionTabs },
   { createProjectSelector },
-  { completionState, historyCompletion },
+  { completionState, historyCompletion, createRemoteDeliveryBuffer },
 ] = await Promise.all([
   loadSub("core/utilities.js"),
   loadSub("core/state-machine.js"),
@@ -57,6 +57,7 @@ let currentSessionId = null;
 let currentDetectedLang = null;
 let conversationHistory = [];
 let remoteTurnActive = false;
+let resetRemoteDelivery = () => {};
 let activeJarvisSessionId = null;
 
 // ── Session manager ref ──
@@ -341,6 +342,7 @@ function updateSessionIndicator() {
 // ── Recording ──
 function beginRecording() {
   if (guardRemoteTurn()) return;
+  resetRemoteDelivery();
   remoteTurnActive = true;
   tts.stop();
   recorder.start().then(() => {
@@ -433,6 +435,7 @@ textInput.onSend((text) => {
   terminal.appendEchoLine(text, false, null);
   conversationHistory.push({ role: "user", text, timestamp: Date.now() });
   syncToManager();
+  resetRemoteDelivery();
   remoteTurnActive = true;
   setUIState("streaming");
   terminal.setBadgeState("running");
@@ -446,6 +449,8 @@ textInput.onSend((text) => {
 if (networkClient) {
   let remoteFullBuffer = "";
   let remoteSpeakBuffer = "";
+  const remoteDelivery = createRemoteDeliveryBuffer();
+  resetRemoteDelivery = () => remoteDelivery.reset();
   let activeOutputContent = null;
   let activeCursorEl = null;
   let activeStreamRenderer = null;
@@ -474,41 +479,25 @@ if (networkClient) {
 
   networkClient.on("stream_delta", (msg) => {
     if (!remoteTurnActive) return;
-    remoteFullBuffer += msg.text;
-    fullBuffer += msg.text;
-    if (!activeOutputContent) {
-      terminal.show();
-      activeOutputContent = el("div", { color: T.text });
-      outputArea.appendChild(activeOutputContent);
-      activeStreamRenderer = markdownRenderer.createStreamRenderer(activeOutputContent);
-      activeCursorEl = el("span", {
-        display: "inline-block", width: "8px", height: isNarrow ? "14px" : "16px",
-        background: T.accent, animation: "jarvisCursorBlink 0.8s step-end infinite",
-        verticalAlign: "middle", marginLeft: "2px",
-      });
-      outputArea.appendChild(activeCursorEl);
-      terminal.setBadgeState("running");
-    }
-    activeStreamRenderer.append(msg.text);
-    outputArea.scrollTop = outputArea.scrollHeight;
-    // TTS — only do client-side sentence speak when NOT in server TTS mode
-    // (server mode pushes audio via tts_audio events instead)
-    if (mobileTtsMode !== "server" && tts.isEnabled && !tts.isMuted) {
-      remoteSpeakBuffer += msg.text;
-      const sentenceEnd = /^([\s\S]*?[.!?])(\s+|\n\n)/;
-      let match;
-      while ((match = sentenceEnd.exec(remoteSpeakBuffer)) !== null) {
-        const sentence = match[1].trim();
-        if (sentence) tts.speak(stripMarkdown(sentence), currentDetectedLang);
-        remoteSpeakBuffer = remoteSpeakBuffer.slice(match[0].length);
-      }
-    }
+    remoteDelivery.append(msg);
   });
 
   networkClient.on("stream_end", (msg) => {
     if (!remoteTurnActive) return;
     remoteTurnActive = false;
-    const completion = completionState(msg);
+    const released = remoteDelivery.finish(msg);
+    const completion = released.completion;
+    remoteFullBuffer = released.text;
+    if (remoteFullBuffer) {
+      fullBuffer += remoteFullBuffer;
+      if (!activeOutputContent) {
+        terminal.show();
+        activeOutputContent = el("div", { color: T.text });
+        outputArea.appendChild(activeOutputContent);
+      }
+      if (!activeStreamRenderer) activeStreamRenderer = markdownRenderer.createStreamRenderer(activeOutputContent);
+      activeStreamRenderer.append(remoteFullBuffer);
+    }
     if (activeCursorEl?.parentNode) activeCursorEl.parentNode.removeChild(activeCursorEl);
     activeCursorEl = null;
     if (msg.sessionId) currentSessionId = msg.sessionId;
@@ -519,8 +508,8 @@ if (networkClient) {
     }
     conversationHistory.push({ role: "assistant", text: remoteFullBuffer, completion, timestamp: Date.now() });
     syncToManager();
-    if (mobileTtsMode !== "server" && tts.isEnabled && !tts.isMuted && remoteSpeakBuffer.trim()) {
-      tts.speak(stripMarkdown(remoteSpeakBuffer.trim()), currentDetectedLang);
+    if (mobileTtsMode !== "server" && tts.isEnabled && !tts.isMuted && remoteFullBuffer.trim()) {
+      tts.speak(stripMarkdown(remoteFullBuffer), currentDetectedLang);
     }
     remoteSpeakBuffer = "";
     terminal.appendCompletionLine(completion);
@@ -532,8 +521,20 @@ if (networkClient) {
     terminal.setBadgeState(completion.badgeState);
   });
 
-  networkClient.on("tts_audio", (msg) => { tts.enqueueServerAudio(msg.data, msg.sampleRate); });
+  networkClient.on("tts_audio", (msg) => {
+    if (remoteDelivery.acceptsAudio(msg)) tts.enqueueServerAudio(msg.data, msg.sampleRate);
+  });
   networkClient.on("tts_end", () => {});
+  networkClient.on("turn_cancelled", () => {
+    remoteTurnActive = false;
+    remoteDelivery.reset();
+    remoteFullBuffer = "";
+    remoteSpeakBuffer = "";
+    if (activeCursorEl?.parentNode) activeCursorEl.parentNode.removeChild(activeCursorEl);
+    activeCursorEl = null;
+    activeOutputContent = null;
+    activeStreamRenderer = null;
+  });
 
   networkClient.on("permission_request", (msg) => {
     if (!remoteTurnActive) return;
@@ -558,8 +559,9 @@ if (networkClient) {
   networkClient.on("error", (msg) => {
     if (!remoteTurnActive) return;
     remoteTurnActive = false;
+    remoteDelivery.reset();
     const completion = completionState({ resultFailed: true });
-    conversationHistory.push({ role: "assistant", text: remoteFullBuffer, completion, timestamp: Date.now() });
+    conversationHistory.push({ role: "assistant", text: "", completion, timestamp: Date.now() });
     syncToManager();
     if (activeStreamRenderer) activeStreamRenderer.finalize();
     activeStreamRenderer = null;
@@ -574,10 +576,12 @@ if (networkClient) {
   });
 
   networkClient.onStateChange((state) => {
+    if (state !== "connected") remoteDelivery.reset();
     if (state === "connected" || !remoteTurnActive) return;
     remoteTurnActive = false;
+    remoteDelivery.reset();
     const completion = completionState({});
-    conversationHistory.push({ role: "assistant", text: remoteFullBuffer, completion, timestamp: Date.now() });
+    conversationHistory.push({ role: "assistant", text: "", completion, timestamp: Date.now() });
     syncToManager();
     if (activeStreamRenderer) activeStreamRenderer.finalize();
     if (activeCursorEl?.parentNode) activeCursorEl.parentNode.removeChild(activeCursorEl);

@@ -12,29 +12,31 @@ class SayEngine extends BaseTTSEngine {
   }
 
   speak(text, lang, epoch) {
-    this._activeProcess = spawn("say", [
+    const proc = spawn("say", [
       "-v", this._voice,
       "-r", String(this._rate),
       "-o", "-",
       "--data-format=LEF32@22050",
       text,
     ]);
+    this._activeProcess = proc;
+    const current = () => this._activeProcess === proc && this._epoch === epoch;
 
-    this._activeProcess.stdout.on("data", (chunk) => {
-      if (this._onAudioChunk) {
+    proc.stdout.on("data", (chunk) => {
+      if (current() && this._onAudioChunk) {
         this._onAudioChunk(chunk.toString("base64"), 22050);
       }
     });
 
-    this._activeProcess.on("close", () => {
+    proc.on("close", () => {
+      if (!current()) return;
       this._activeProcess = null;
-      if (this._epoch !== epoch) return;
       if (this._onComplete) this._onComplete({ success: true });
     });
 
-    this._activeProcess.on("error", () => {
+    proc.on("error", () => {
+      if (!current()) return;
       this._activeProcess = null;
-      if (this._epoch !== epoch) return;
       if (this._onComplete) this._onComplete({ success: true });
     });
   }

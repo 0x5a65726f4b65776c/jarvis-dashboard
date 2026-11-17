@@ -33,3 +33,7 @@ ios/build/
 ios/DerivedData/
 ios/web/src
 ios/web/shared
+
+# Private runtime review bundles and per-session receipts.
+.claude/state/
+capture/*.lock
