@@ -233,6 +233,10 @@ Hierarchy: Stewardship → Ownership → Capital Allocation → Systems → Oper
   pull request, merge it if it is the session's own work and merging is safe, report the
   result in the reply, and stop. If a pull request genuinely needs watching, say so in the
   reply and let him decide; do not arrange it and tell him afterward.
+- **Merge a session's own pull request only after its checks finish green.** After editing any
+  skill or agent instruction, regenerate the agent manifest (`scripts/gen_agents.py`, where the
+  repo has one) before pushing. Nick, 2026-11-18, after a merge ahead of a failing check left
+  master red.
 
 ## Mailbox model (both tenants)
 
