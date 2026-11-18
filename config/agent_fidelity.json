@@ -4,11 +4,11 @@
       "definition": "CLAUDE.md",
       "kind": "orchestrator",
       "name": "dashboard-maintainer",
-      "sha256": "2e9d0acb0e6aca1a523bcb3dd2fe994a7f90134a33260e12958788c745eb6c5d",
+      "sha256": "7c526649b0c660b3fc9f38269e501a36fd9843334409c57572c54fe4c103360a",
       "skills": {},
       "sources": {
         "AGENTS.md": "a69583abbc591f194c11f807268983193116c5e78666cb25f3a8c4681e201815",
-        "CLAUDE.md": "2e9d0acb0e6aca1a523bcb3dd2fe994a7f90134a33260e12958788c745eb6c5d",
+        "CLAUDE.md": "7c526649b0c660b3fc9f38269e501a36fd9843334409c57572c54fe4c103360a",
         "scripts/build_agent_fidelity.py": "8a24da75fa65f5b24f15cbddd19776c2816caa0dd4cc2537aa30e1784a9af207"
       }
     },
@@ -30,7 +30,7 @@
   "shared_sources": {
     ".claude/settings.json": "89ba4afcfdef6a9ff57ae5d298015c97a446c480a05c603d01c8c5951579d4b2",
     "AGENTS.md": "a69583abbc591f194c11f807268983193116c5e78666cb25f3a8c4681e201815",
-    "CLAUDE.md": "2e9d0acb0e6aca1a523bcb3dd2fe994a7f90134a33260e12958788c745eb6c5d",
+    "CLAUDE.md": "7c526649b0c660b3fc9f38269e501a36fd9843334409c57572c54fe4c103360a",
     "doctrine/agent_delivery.md": "9c1daf781d54111fadd514689bf097bd918dcd74a108a69e6aa578812384aaaa",
     "scripts/agent_gate.py": "576956bc7bbee2055dfebfe406fb91f9f9fa331b8ce71308dc1addaecefd97fa",
     "scripts/check_agent_fidelity.py": "1a3984b0ed7242d554cc86d8f3956ca7bcd088ec7f2928ff2e3fb5a096dbad5e",

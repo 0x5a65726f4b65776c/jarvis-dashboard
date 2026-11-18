@@ -187,8 +187,9 @@ Hierarchy: Stewardship → Ownership → Capital Allocation → Systems → Oper
 ## Hard constraints
 
 - **Send nothing without explicit approval.** "Send it" means draft it. Approval is per-message,
-  never a category. Sole exception: STANDING-DAILY-BOARD-BRIEF — one artifact, one subject line,
-  three recipients.
+  never a category. Standing sends cover only a brief addressed to Nick alone, each recorded
+  where its stack keeps approvals. Since 2026-11-17 the daily board brief is placed in Nick's
+  Archeon Drafts and he sends it himself.
 - Nothing in this stack uses Gmail — not to send, draft, or read.
 - Never raise the 83(b) item. Kristine owns it. Binds every surface including the calendar feed.
 - Never set `ReviewStatus = Approved`; never change one Nick set. Row 13 — do not touch.
