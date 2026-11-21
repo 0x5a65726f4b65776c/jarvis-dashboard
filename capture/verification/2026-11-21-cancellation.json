@@ -1,0 +1,30 @@
+{
+  "anchor": "if (!current()) return;",
+  "command": [
+    "node",
+    "companion/tests/cancellation.test.js"
+  ],
+  "criterion": "Cancellation fences late callbacks, preserves replacement runs, and retains process-group escalation after parent exit.",
+  "executed_tests": null,
+  "exit_code": 0,
+  "failure": "",
+  "finished_at": "2026-11-21T12:59:01.721971+00:00",
+  "inputs": {
+    "companion/modules/claude-runner.js": "3eafeafc1025f412942221cb99fb76c90496004bfc3eb6b68cf220643a94a99b",
+    "companion/modules/connection-handler.js": "f06b87df56ced0bf8d1be17123ce78a34b722a4dc1127bd560f07dbccebaa49d",
+    "companion/tests/cancellation.test.js": "4f2a31252dfccd3def3fde994ebd16c941a435765ec3d309685620170ba1f717"
+  },
+  "inputs_unchanged": true,
+  "lesson_id": "L-1677a296",
+  "not_proved": "Test adequacy, deployment, model context consumption, and external outcomes require separate evidence.",
+  "passed": true,
+  "run_key": "maturation-2026-11-21-cancellation",
+  "runner": "script",
+  "schema": "learning-verification/v1",
+  "started_at": "2026-11-21T12:59:01.602434+00:00",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_sha256": "5e89a4aef946ea99b1a51fe28d65fa2c942aac07c90bca2112c828f8a88c2715",
+  "surface": "companion/modules/claude-runner.js",
+  "surface_sha256": "3eafeafc1025f412942221cb99fb76c90496004bfc3eb6b68cf220643a94a99b",
+  "test_file": "companion/tests/cancellation.test.js"
+}

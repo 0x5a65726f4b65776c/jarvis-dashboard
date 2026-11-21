@@ -1,7 +1,7 @@
 # Repository agent instructions
 
 Read `CLAUDE.md` and `doctrine/agent_delivery.md` before repository work. They define
-standing authority, domain boundaries, learning and final delivery contract 2026-11-17.1.
+standing authority, domain boundaries, learning and final delivery contract 2026-11-21.1.
 Use the current authoritative agent definition and its declared skills; check
 `config/agent_fidelity.json` with `python3 scripts/check_agent_fidelity.py` after changes.
 

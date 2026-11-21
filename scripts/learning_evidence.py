@@ -17,7 +17,10 @@ import subprocess
 import tempfile
 
 SCHEMA = "learning-verification/v1"
-CONTEXT_CONTRACT = "2026-11-17.1"
+CONTEXT_CONTRACT = "2026-11-21.1"
+# Historical observations retain their original contract and bound source hashes.
+# Accepting their schema does not refresh a current delivery or its instruction bundle.
+CONTEXT_CONTRACTS = {"2026-11-17.1", CONTEXT_CONTRACT}
 
 
 def now():
@@ -311,7 +314,7 @@ def read_context(root, path, installed, receipt):
     context = json.loads(local.read_text(encoding="utf-8"))
     if not isinstance(context, dict):
         raise ValueError("context receipt must be an object")
-    if context.get("schema_version") != 1 or context.get("contract_version") != CONTEXT_CONTRACT:
+    if context.get("schema_version") != 1 or context.get("contract_version") not in CONTEXT_CONTRACTS:
         raise ValueError("context receipt uses an unknown schema or delivery contract")
     if not context.get("session_id") or context.get("run_key") != receipt["run_key"] or context.get("turn_id") != receipt["run_key"]:
         raise ValueError("context receipt does not belong to this later run")

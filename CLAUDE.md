@@ -92,7 +92,7 @@ and this stack owns that, not him.
 ## Final delivery and recursive learning
 
 The owning orchestrator and Hermes are the final check before a result reaches Nick.
-Follow `doctrine/agent_delivery.md` (contract `2026-11-17.1`). Workers return evidence,
+Follow `doctrine/agent_delivery.md` (contract `2026-11-21.1`). Workers return evidence,
 outcome and a learning disposition to their owning orchestrator. The orchestrator fixes
 in-scope defects, records lessons and verifies acceptance; the independent `hermes-reviewer`
 checks the exact proposed reply, material omissions and supporting evidence. Stage and

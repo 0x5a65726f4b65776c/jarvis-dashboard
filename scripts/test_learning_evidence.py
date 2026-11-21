@@ -147,6 +147,27 @@ class LearningEvidenceTests(unittest.TestCase):
         path.write_text(json.dumps(context))
         self.assertEqual(self.observe("later"), 1)
 
+    def test_previous_contract_observation_retains_its_bound_evidence(self):
+        self.verify()
+        self.apply()
+        self.verify(run="later")
+        path = self.root / self.context_path("later")
+        context = json.loads(path.read_text())
+        context["contract_version"] = "2026-11-17.1"
+        path.write_text(json.dumps(context))
+        self.assertEqual(self.observe("later"), 0)
+        self.assertEqual(evidence.assess(self.row(), self.root)["status"], "validated")
+
+    def test_unrecognized_context_contract_is_not_promoted(self):
+        self.verify()
+        self.apply()
+        self.verify(run="later")
+        path = self.root / self.context_path("later")
+        context = json.loads(path.read_text())
+        context["contract_version"] = "unreviewed-contract"
+        path.write_text(json.dumps(context))
+        self.assertEqual(self.observe("later"), 1)
+
     def test_runtime_context_for_another_run_is_refused(self):
         self.verify()
         self.apply()

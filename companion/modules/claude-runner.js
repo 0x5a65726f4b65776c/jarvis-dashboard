@@ -8,9 +8,20 @@ const os = require("os");
 const path = require("path");
 const { expandPath, stripAnsi } = require("./utils");
 
+const MAX_EXECUTION_MS = 2 * 60 * 60 * 1000;
+const TERMINATION_GRACE_MS = 2000;
+
 class ClaudeRunner {
-  constructor(config, { spawnProcess = spawn } = {}) {
+  constructor(config, { spawnProcess = spawn, schedule = setTimeout, cancelTimer = clearTimeout,
+    killProcessGroup = (pid, signal) => process.kill(-pid, signal) } = {}) {
     this._spawn = spawnProcess;
+    this._schedule = schedule;
+    this._cancelTimer = cancelTimer;
+    this._killProcessGroup = killProcessGroup;
+    this._executionTimeoutMs = config.executionTimeoutMs ?? MAX_EXECUTION_MS;
+    if (!Number.isSafeInteger(this._executionTimeoutMs) || this._executionTimeoutMs <= 0 || this._executionTimeoutMs > MAX_EXECUTION_MS) {
+      throw new Error("executionTimeoutMs must be a positive integer no greater than two hours");
+    }
     this._activeRun = null;
     this._claudePath = config.claudePath || null;
     this._projectPath = config.projectPath || null;
@@ -140,6 +151,8 @@ class ClaudeRunner {
       return { cancel: () => {} };
     }
 
+    // Replacing a run revokes its callbacks before its process is signaled.
+    this.cancel();
     const cwd = expandPath(this._projectPath, os.homedir());
     const args = this._buildArgs();
     const snapshot = this._snapshotJsonlFiles();
@@ -150,13 +163,14 @@ class ClaudeRunner {
     delete childEnv.CLAUDE_CODE_ENTRYPOINT;
     delete childEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
 
-    const run = { settled: false, resultReceived: false, resultFailed: null,
+    const run = { settled: false, closed: false, resultReceived: false, resultFailed: null,
       finalText: null, runtimeSessionId: null, startedAt: new Date().toISOString() };
     this._activeRun = run;
     let proc;
     try {
       proc = this._spawn(this._claudePath, args, {
         cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"],
+        detached: process.platform !== "win32",
       });
     } catch (err) {
       run.settled = true;
@@ -164,9 +178,11 @@ class ClaudeRunner {
       onError(err);
       return { cancel: () => {} };
     }
+    run.process = proc;
     this._activeProcess = proc;
     const current = () => this._activeRun === run && !run.settled;
     const handleMessage = (msg) => {
+      if (!current()) return;
       if (msg.type === "result") {
         run.resultReceived = true;
         // Select the terminal provider result, not concatenated assistant drafts,
@@ -193,6 +209,7 @@ class ClaudeRunner {
       textBuffer = lines.pop() || ""; // Keep incomplete line
 
       for (const line of lines) {
+        if (!current()) break;
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {
@@ -212,6 +229,15 @@ class ClaudeRunner {
     });
 
     proc.on("close", (exitCode, signal) => {
+      // A direct child's exit does not establish that its descendants stopped.
+      // Complete cancellation of its owned POSIX group immediately, while the
+      // group identity is still tied to this run; do not leave a delayed PID kill.
+      if (run.stopRequested && process.platform !== "win32" && Number.isInteger(proc.pid) && proc.pid > 0) {
+        try { this._killProcessGroup(proc.pid, "SIGKILL"); } catch {}
+      }
+      run.closed = true;
+      this._cancelTimer(run.killTimer);
+      this._cancelTimer(run.deadlineTimer);
       if (!current()) return;
 
       // Process remaining buffer
@@ -224,12 +250,14 @@ class ClaudeRunner {
         }
       }
 
+      if (!current()) return;
       // Detect session ID
       const newId = run.runtimeSessionId ?? this._sessionId ?? this._detectNewSession(snapshot);
       if (newId) this._sessionId = newId;
 
       run.settled = true;
       this._activeProcess = null;
+      this._activeRun = null;
       onEnd({ exitCode: exitCode ?? null, signal: signal || null, sessionId: this._sessionId,
         resultReceived: run.resultReceived, resultFailed: run.resultFailed,
         finalText: run.finalText, runtimeSessionId: run.runtimeSessionId,
@@ -238,13 +266,17 @@ class ClaudeRunner {
 
     const fail = (err) => {
       if (!current()) return;
-      run.settled = true;
-      this._activeProcess = null;
-      try { proc.kill("SIGTERM"); } catch {}
+      this._stopRun(run);
       onError(new Error(`claude error: ${err.message}`));
     };
     proc.on("error", fail);
     proc.stdin.on("error", fail);
+    run.deadlineTimer = this._schedule(() => {
+      if (!current()) return;
+      this._stopRun(run);
+      onError(new Error("Execution deadline reached; cancellation requested and late output discarded. Resume from recorded evidence."));
+    }, this._executionTimeoutMs);
+    run.deadlineTimer?.unref?.();
     // Install error handlers before writing; a broken pipe is a failed attempt.
     try {
       proc.stdin.write(JSON.stringify({
@@ -314,11 +346,33 @@ class ClaudeRunner {
     }
   }
 
-  cancel() {
-    if (this._activeProcess) {
-      try { this._activeProcess.kill("SIGTERM"); } catch {}
+  _signal(run, signal) {
+    if (run.closed || !run.process) return;
+    if (process.platform !== "win32" && Number.isInteger(run.process.pid) && run.process.pid > 0) {
+      try { this._killProcessGroup(run.process.pid, signal); return; } catch {}
+    }
+    try { run.process.kill(signal); } catch {}
+  }
+
+  _stopRun(run) {
+    // Signal delivery is not proof of process exit. Keep escalation bound to the
+    // original process, while fencing every output and interaction immediately.
+    if (run.settled) return;
+    run.settled = true;
+    run.stopRequested = true;
+    run.finalText = null;
+    this._cancelTimer(run.deadlineTimer);
+    if (this._activeRun === run) {
+      this._activeRun = null;
       this._activeProcess = null;
     }
+    this._signal(run, "SIGTERM");
+    run.killTimer = this._schedule(() => this._signal(run, "SIGKILL"), TERMINATION_GRACE_MS);
+    run.killTimer?.unref?.();
+  }
+
+  cancel() {
+    if (this._activeRun) this._stopRun(this._activeRun);
   }
 
   clearSession() {

@@ -18,9 +18,29 @@ import re
 import secrets
 import sys
 
-VERSION = "2026-11-17.1"
+VERSION = "2026-11-21.1"
 CHECKS = ("evidence", "completion", "scope", "learning", "principal_relevance", "fidelity")
 REVIEWER = "hermes-reviewer"
+# A prompt the runtime submits on its own (a background agent's hand-back or a task
+# notification) continues the current turn while a reviewer dispatched in this turn is
+# working on the open release; it is not a new request. Any other prompt starts a new turn
+# and voids the release. A runtime origin decides on its own. Without one, the prompt must
+# open with the runtime's own envelope: a marker quoted or pasted later in a prompt does not
+# count. The generic peer-message channel is not a continuation, since a peer can ask for
+# new work there.
+CONTINUATION_KINDS = {"task-notification", "subagent-handback"}
+_WRAPPER = r"(?:<system-reminder[^>]*>\s*)?"
+CONTINUATION_ENVELOPES = (
+    re.compile(_WRAPPER + r"\[SYSTEM NOTIFICATION - NOT USER INPUT\]"),
+    re.compile(_WRAPPER + r"<task-notification>"),
+    re.compile(_WRAPPER + r"Another Claude session sent a message while you were working:\s*"
+               r"<agent-message from=\"(?P<sender>[^\"]+)\">\s*\[Subagent hand-back\]"),
+    # The runtime hands the hook the raw frame. The "Another Claude session" line is added
+    # only when the frame is rendered for the model (pilot, 2026-11-18), so the raw form is
+    # the one a hook actually sees. It must open the prompt, as every envelope must.
+    re.compile(_WRAPPER + r"<agent-message from=\"(?P<sender>[^\"]+)\">\s*\[Subagent hand-back\]"),
+)
+TRACE_CHARS = 160
 BLOCKED_REPLY = ("The required final review could not be completed, so this result is not cleared "
                  "for delivery. The orchestrator owns resolving the review failure; no completion "
                  "is being claimed.")
@@ -172,7 +192,54 @@ def learning_check(root, learning):
             raise ValueError("A recurrence must reopen its lesson")
 
 
-def packet_check(root, packet):
+def execution_policy(root, overrides=None):
+    policy = read_json(root / "config/maturation.json")["execution"]
+    names = {"max_dispatches", "review_dispatches", "deadline_seconds", "review_grace_seconds"}
+    result = {}
+    for key in names:
+        value = policy.get(key)
+        minimum = 0 if key in {"max_dispatches", "review_grace_seconds"} else 1
+        if type(value) is not int or value < minimum:
+            raise ValueError("Invalid repository execution limit: " + key)
+        result[key] = value
+    overrides = {} if overrides is None else overrides
+    if not isinstance(overrides, dict) or set(overrides) - names:
+        raise ValueError("Unknown task execution limit")
+    for key, value in overrides.items():
+        minimum = 0 if key in {"max_dispatches", "review_grace_seconds"} else 1
+        if type(value) is not int or value < minimum or value > result[key]:
+            raise ValueError("Task execution limit cannot widen repository policy: " + key)
+        result[key] = value
+    return result
+
+
+def plan_check(root, plan):
+    if not isinstance(plan, dict) or type(plan.get("schema_version")) is not int or plan["schema_version"] != 1:
+        raise ValueError("Requirement plan must be a schema_version 1 object")
+    if set(plan) - {"schema_version", "task_key", "request", "profile", "requirements", "execution"}:
+        raise ValueError("Unknown requirement plan field")
+    if plan.get("profile", "task") not in {"task", "research", "brief", "commercial"}:
+        raise ValueError("Unknown requirement plan profile")
+    for key in ("task_key", "request"):
+        text_required(plan.get(key), "Plan " + key)
+    rows = plan.get("requirements")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Plan must enumerate the original request's requirements")
+    identifiers = set()
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"id", "criterion", "priority"}:
+            raise ValueError("Each requirement needs id, criterion, and priority")
+        text_required(row.get("id"), "Requirement id")
+        text_required(row.get("criterion"), "Requirement criterion")
+        if row["id"] in identifiers or row["priority"] not in {"must", "should", "could"}:
+            raise ValueError("Requirement IDs must be unique and priorities explicit")
+        identifiers.add(row["id"])
+    if not any(row["priority"] == "must" for row in rows):
+        raise ValueError("A requirement plan must contain an essential result")
+    execution_policy(root, plan.get("execution"))
+
+
+def packet_check(root, packet, requirement_plan=None):
     if not isinstance(packet, dict):
         raise ValueError("Delivery packet must be an object")
     if packet.get("schema_version") != 1:
@@ -217,6 +284,52 @@ def packet_check(root, packet):
             raise ValueError("Met acceptance criteria require matching evidence")
         if outcome == "complete" and not criterion["met"]:
             raise ValueError("Unmet acceptance criteria prevent complete status")
+    if outcome in {"complete", "partial"} and requirement_plan is None:
+        raise ValueError("Complete or partial delivery requires a registered requirement plan")
+    if requirement_plan is not None:
+        plan = requirement_plan["plan"]
+        plan_check(root, plan)
+        if any(packet[key] != plan[key] for key in ("task_key", "request")):
+            raise ValueError("Delivery changed the registered task or request")
+        planned = {row["id"]: row for row in plan["requirements"]}
+        covered = set()
+        seen = set()
+        for criterion in acceptance:
+            ident = criterion.get("requirement_id")
+            if ident not in planned or ident in seen:
+                raise ValueError("Acceptance must reference distinct registered requirement IDs")
+            seen.add(ident)
+            if criterion["criterion"] != planned[ident]["criterion"]:
+                raise ValueError("Acceptance cannot substitute a weaker requirement")
+            if criterion["met"]:
+                covered.add(ident)
+        missing = {key for key, row in planned.items() if row["priority"] == "must"} - covered
+        if outcome == "complete" and missing:
+            raise ValueError("Essential requirement lacks verified evidence: " + ", ".join(sorted(missing)))
+        if (plan.get("profile", "task") in {"research", "brief", "commercial"}
+                and outcome in {"complete", "partial"} and packet.get("evidence_manifest") is None):
+            raise ValueError("This workflow requires a bound evidence manifest")
+    if packet.get("evidence_manifest") is not None:
+        config = read_json(root / "config/maturation.json")
+        module = load_module(root / "scripts/evidence_manifest.py", "delivery_evidence_manifest")
+        report = module.check_reference(root, packet["evidence_manifest"], config["entity"],
+                                        require_complete=outcome == "complete")
+        if report["task_key"] != packet["task_key"]:
+            raise ValueError("Evidence manifest belongs to another task")
+        if outcome != "complete":
+            unresolved = packet.get("unresolved", [])
+            disclosed = {row.get("source_id") for row in unresolved if isinstance(row, dict)} if isinstance(unresolved, list) else set()
+            missing = {issue["source_id"] for issue in report["issues"]} - disclosed
+            if missing:
+                raise ValueError("Collection gaps need an unresolved owner/action for each source: " + ", ".join(sorted(missing)))
+        receipt = {"reference": report["reference"], "dependencies": report["dependencies"],
+                   "complete": report["complete"], "issues": report["issues"]}
+        if packet.get("evidence_manifest_receipt") is not None and packet["evidence_manifest_receipt"] != receipt:
+            raise ValueError("Evidence inputs or collection coverage changed after staging")
+        packet["evidence_manifest"] = report["reference"]
+        packet["evidence_manifest_receipt"] = receipt
+    elif packet.get("evidence_manifest_receipt") is not None:
+        raise ValueError("Evidence manifest receipt has no source manifest")
     claims = packet.get("claims", [])
     if not isinstance(claims, list):
         raise ValueError("Claims must be a list")
@@ -247,6 +360,55 @@ def packet_check(root, packet):
         if decision.get("deadline") and not decision.get("deadline_source"):
             raise ValueError("A principal deadline needs its external source")
     learning_check(root, packet.get("learning"))
+
+
+def machine_continuation(payload, state=None):
+    origin = payload.get("origin")
+    if origin is not None:
+        kind = origin.get("kind") if isinstance(origin, dict) else origin
+        return isinstance(kind, str) and kind in CONTINUATION_KINDS
+    head = str(payload.get("prompt", "")).lstrip()
+    for envelope in CONTINUATION_ENVELOPES:
+        match = envelope.match(head)
+        if not match:
+            continue
+        sender = match.groupdict().get("sender")
+        if sender is None:
+            return True
+        # A hand-back frame counts only from a subagent this turn dispatched. A peer session
+        # can open its message with the same marker, and its id is never a dispatch id here.
+        state = state or {}
+        dispatch = state.get("dispatches", {}).get(sender) or {}
+        return bool(state.get("turn_id")) and dispatch.get("turn_id") == state.get("turn_id")
+    return False
+
+
+def prompt_trace(payload):
+    """What the audit keeps about a prompt: enough to diagnose a missed continuation, not the text."""
+    prompt = str(payload.get("prompt", ""))
+    head = prompt.lstrip()
+    origin = payload.get("origin")
+    if isinstance(origin, dict):
+        origin = {"kind": origin.get("kind") if isinstance(origin.get("kind"), str) else None,
+                  "keys": sorted(str(k) for k in origin)[:10]}
+    elif isinstance(origin, str):
+        origin = origin[:60]
+    else:
+        origin = None
+    return {"origin_present": "origin" in payload, "origin_type": type(payload.get("origin")).__name__,
+            "origin": origin, "prompt_chars": len(prompt),
+            "prompt_head": head[:TRACE_CHARS] if head[:1] in ("<", "[") else None}
+
+
+def awaiting_review(state):
+    # Any reviewer dispatched in this turn counts, so a revise loop (review, fix, restage)
+    # survives a notification that lands before the next reviewer starts. Keeping the
+    # release grants nothing: delivery still needs a Hermes review bound to that release.
+    release = state.get("release")
+    if not release or state.get("delivered") or release.get("turn_id") != state.get("turn_id"):
+        return False
+    return any(row.get("agent_type") == REVIEWER and row.get("turn_id") == state.get("turn_id")
+               for row in state.get("dispatches", {}).values())
 
 
 def validate_review(review, release, role):
@@ -293,14 +455,83 @@ class Gate:
     def save(self, state):
         write_json(self.path, state)
 
-    def begin(self, prompt_hash=""):
+    def begin(self, prompt_hash="", preserve_plan=False, **why):
         state = self.read()
         if state.get("release") and not state.get("delivered"):
-            self.audit("abandoned", state["release"]["release_id"])
+            self.audit("abandoned", state["release"]["release_id"], **why)
         state.update(turn_id=secrets.token_hex(12), prompt_hash=prompt_hash, started_at=now(),
                      release=None, reviews={}, delivered=False, stop_blocks=0)
+        if not preserve_plan:
+            state.update(requirement_plan=None, dispatch_allowance={"started_at": state["started_at"], "calls": {}})
         self.save(state)
         return state
+
+    def plan(self, plan):
+        state = self.read()
+        if not state.get("turn_id"):
+            raise ValueError("Start a runtime turn before registering its requirements")
+        self.validate_context(state)
+        plan_check(self.root, plan)
+        previous = state.get("requirement_plan")
+        if previous:
+            if previous["plan"] != plan:
+                raise ValueError("Registered requirements are immutable for this request")
+            return previous
+        if state.get("release"):
+            raise ValueError("Register requirements before staging a release")
+        record = {"plan": plan, "prompt_sha256": state["prompt_hash"], "created_at": now()}
+        record["sha256"] = digest(canonical(record))
+        state["requirement_plan"] = record
+        self.save(state)
+        write_json(self.directory / "requirements.json", record)
+        self.audit("requirements_registered", None, plan_sha256=record["sha256"])
+        return record
+
+    def requirement_plan(self, state):
+        record = state.get("requirement_plan")
+        if record is None:
+            return None
+        if digest(canonical({key: value for key, value in record.items() if key != "sha256"})) != record.get("sha256"):
+            raise ValueError("Registered requirement plan changed")
+        if record.get("prompt_sha256") != state.get("prompt_hash"):
+            raise ValueError("Requirement plan belongs to another request")
+        plan_check(self.root, record["plan"])
+        return record
+
+    def admit_dispatch(self, state, payload):
+        if payload.get("tool_name") not in {"Agent", "Task"}:
+            return
+        if not state.get("turn_id"):
+            raise ValueError("No active runtime turn for dispatch")
+        record = self.requirement_plan(state)
+        limits = execution_policy(self.root, (record or {}).get("plan", {}).get("execution"))
+        call_id = payload.get("tool_use_id")
+        text_required(call_id, "Runtime dispatch tool_use_id")
+        tool_input = payload.get("tool_input", {})
+        if not isinstance(tool_input, dict):
+            raise ValueError("Dispatch input must be an object")
+        review = tool_input.get("subagent_type") == REVIEWER
+        if not review and record is None:
+            raise ValueError("Register the original requirement plan before delegated work")
+        if review and not state.get("release"):
+            raise ValueError("Stage the review bundle before dispatching its reviewer")
+        allowance = state.setdefault("dispatch_allowance", {"started_at": state["started_at"], "calls": {}})
+        elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(allowance["started_at"])).total_seconds()
+        ceiling = limits["deadline_seconds"] + (limits["review_grace_seconds"] if review else 0)
+        if elapsed < 0 or elapsed >= ceiling:
+            raise ValueError("Dispatch deadline reached; checkpoint and report blocked work")
+        calls = allowance["calls"]
+        identity = {"review": review, "input_sha256": digest(canonical(tool_input))}
+        if call_id in calls:
+            if calls[call_id] != identity:
+                raise ValueError("Runtime dispatch ID was reused for different work")
+            return
+        used = sum(row["review"] == review for row in calls.values())
+        ceiling = limits["review_dispatches"] if review else limits["max_dispatches"]
+        if used >= ceiling:
+            raise ValueError("Review dispatch allowance exhausted" if review else "Work dispatch allowance exhausted; verification reserve remains available")
+        calls[call_id] = identity
+        self.save(state)
 
     def record_context(self, state):
         version = fidelity(self.root)
@@ -335,12 +566,14 @@ class Gate:
         if not state.get("turn_id"):
             raise ValueError("No active prompt receipt; start the runtime session first")
         self.validate_context(state)
-        packet_check(self.root, packet)
+        requirement_plan = self.requirement_plan(state)
+        packet_check(self.root, packet, requirement_plan)
         text_required(reply, "Final reply")
         release = {"schema_version": 1, "contract_version": VERSION,
                    "session_id": self.session, "turn_id": state["turn_id"],
                    "created_at": now(), "fidelity_sha256": fidelity(self.root),
                    "worker_receipts": self.required_receipts(state),
+                   "requirement_plan": requirement_plan,
                    "packet": packet, "reply": reply, "reply_sha256": reply_hash(reply)}
         release["release_id"] = digest(canonical(release))
         state.update(release=release, reviews={}, delivered=False)
@@ -402,7 +635,10 @@ class Gate:
             raise ValueError("Staged release was modified")
         if fidelity(self.root) != release["fidelity_sha256"]:
             raise ValueError("Instructions changed after review; restage and review")
-        packet_check(self.root, release["packet"])
+        requirement_plan = self.requirement_plan(state)
+        if release.get("requirement_plan") != requirement_plan:
+            raise ValueError("Requirement plan changed after review")
+        packet_check(self.root, release["packet"], requirement_plan)
         if release.get("worker_receipts", []) != self.required_receipts(state):
             raise ValueError("Required worker handoff changed after staging; restage and review")
         for role in ("orchestrator", "hermes"):
@@ -424,8 +660,16 @@ class Gate:
         event = payload["hook_event_name"]
         state = self.read()
         if event in {"SessionStart", "UserPromptSubmit"}:
-            if event == "UserPromptSubmit" or not state.get("turn_id"):
-                state = self.begin(digest(str(payload.get("prompt", "")).encode()))
+            if event == "UserPromptSubmit" and machine_continuation(payload, state) and awaiting_review(state):
+                self.audit("continued", state["release"]["release_id"], hook_event=event,
+                           prompt_sha256=digest(str(payload.get("prompt", "")).encode()),
+                           **prompt_trace(payload))
+            elif event == "UserPromptSubmit" or not state.get("turn_id"):
+                # Record why a release was abandoned: what origin the runtime sent and, for a
+                # machine-shaped prompt only, how it opened, so a continuation that fails to
+                # match can be diagnosed from the local audit log. State stays in .claude/state.
+                state = self.begin(digest(str(payload.get("prompt", "")).encode()), hook_event=event,
+                                   **prompt_trace(payload))
             try:
                 receipt = self.record_context(state)
                 status = "verified " + receipt["fidelity_sha256"]
@@ -435,8 +679,10 @@ class Gate:
                 learned = "Instruction verification blocked; repair before dispatch or delivery."
             return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
                 f"Delivery contract {VERSION}; session {self.session}; turn {state['turn_id']}; fidelity {status}. "
-                "Read doctrine/agent_delivery.md. Before a final reply, stage the exact reply and evidence, "
-                "record the owning orchestrator review, dispatch hermes-reviewer, then check the gate. "
+                "Read doctrine/agent_delivery.md. Register the original request's essential requirements "
+                "with agent_gate.py plan before substantive delegated work. Before a final reply, stage the exact reply and evidence, "
+                "record the owning orchestrator review, dispatch hermes-reviewer in the foreground and wait for "
+                "its verdict, then check the gate. "
                 "Workers return evidence and a learning disposition to their orchestrator. "
                 "Do not route routine review work to Nick. "
                 f"Learning run key {state['turn_id']}; context receipt {(state.get('context_receipt') or {}).get('path', 'unavailable')}. "
@@ -444,6 +690,7 @@ class Gate:
         if event == "PreToolUse":
             try:
                 fidelity(self.root)
+                self.admit_dispatch(state, payload)
             except (ValueError, OSError, KeyError) as exc:
                 return {"hookSpecificOutput": {"hookEventName": event, "permissionDecision": "deny",
                         "permissionDecisionReason": str(exc)}}
@@ -480,6 +727,13 @@ class Gate:
                            else payload.get("last_assistant_message", "")).strip()
                 previous = state.get("reviews", {}).get("hermes", {})
                 if event == "SubagentStop" and previous.get("captured_from") == "SubagentHandback" and previous.get("agent_id") == payload.get("agent_id"):
+                    return {}
+                current = (state.get("release") or {}).get("release_id")
+                stale = state.get("dispatches", {}).get(payload.get("agent_id"), {})
+                if (current and stale.get("agent_type") == REVIEWER and stale.get("turn_id") == state.get("turn_id")
+                        and stale.get("release_id") and stale.get("release_id") != current):
+                    # A reviewer of a release this turn has since replaced: record nothing, let it stop.
+                    self.audit("stale_review_ignored", stale["release_id"], current=current)
                     return {}
                 if content.startswith("```"):
                     content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content)
@@ -550,13 +804,13 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("hook")
     commands.add_parser("fidelity")
-    for name in ("begin", "refresh-context", "stage", "review", "check"):
+    for name in ("begin", "refresh-context", "plan", "stage", "review", "check"):
         command = commands.add_parser(name)
         command.add_argument("--session", required=True)
         if name == "stage":
             command.add_argument("--packet", required=True)
             command.add_argument("--reply", required=True)
-        if name == "review":
+        if name in {"review", "plan"}:
             command.add_argument("--file", required=True)
         if name == "check":
             command.add_argument("--artifact", action="append", default=[])
@@ -578,12 +832,14 @@ def main(argv=None):
                 result = gate.begin()
             elif args.command == "refresh-context":
                 previous = gate.read()
-                state = gate.begin(previous.get("prompt_hash", ""))
+                state = gate.begin(previous.get("prompt_hash", ""), preserve_plan=True)
                 receipt = gate.record_context(state)
                 result = {"context_receipt": state["context_receipt"], "run_key": receipt["run_key"],
                           "contract": (gate.root / "doctrine/agent_delivery.md").read_text(),
                           "active_lessons": receipt["active_lessons"],
                           "scope": "Explicit tool-loaded context refresh; this is not a new user request"}
+            elif args.command == "plan":
+                result = gate.plan(read_json(local(gate.root, args.file)))
             elif args.command == "stage":
                 result = gate.stage(read_json(local(gate.root, args.packet)), local(gate.root, args.reply).read_text())
             elif args.command == "review":

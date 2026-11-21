@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-CONTRACT_VERSION = "2026-11-17.1"
+CONTRACT_VERSION = "2026-11-21.1"
 MANIFEST = "config/agent_fidelity.json"
 SHARED_PATHS = (
     "CLAUDE.md",
@@ -23,8 +23,18 @@ SHARED_PATHS = (
     "doctrine/agent_delivery.md",
     "scripts/agent_gate.py",
     "scripts/learning_evidence.py",
+    "config/maturation.json",
+    "scripts/evidence_manifest.py",
+    "scripts/execution_control.py",
+    "doctrine/evidence_manifest.md",
+    "doctrine/execution_control.md",
     ".claude/settings.json",
     "scripts/check_agent_fidelity.py",
+)
+OPTIONAL_PATHS = (
+    "scripts/opportunity_evidence.py",
+    "config/opportunity_rules.json",
+    "doctrine/opportunity_evidence.md",
 )
 SUPPLEMENTAL = {"hermes-reviewer": "reviewer"}
 
@@ -88,7 +98,7 @@ def write_manifest(root: Path, repo: str, generator: str | None,
     # During installation the delivery files can be written after the domain
     # definitions. The checker still fails until every required source exists
     # and the manifest is regenerated; a partial install is never release-ready.
-    shared = [p for p in SHARED_PATHS if (root / p).is_file()]
+    shared = [p for p in SHARED_PATHS + OPTIONAL_PATHS if (root / p).is_file()]
     data = {
         "schema_version": 1, "contract_version": CONTRACT_VERSION,
         "repo": repo, "generator": generator,
@@ -135,6 +145,9 @@ def check(root: Path) -> list[str]:
     for relative in SHARED_PATHS:
         if relative not in shared:
             errors.append("untracked shared instruction source: " + relative)
+    for relative in OPTIONAL_PATHS:
+        if (root / relative).is_file() and relative not in shared:
+            errors.append("untracked domain instruction source: " + relative)
 
     agents = data.get("agents")
     if not isinstance(agents, list) or not agents:

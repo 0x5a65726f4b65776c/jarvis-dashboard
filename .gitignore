@@ -37,3 +37,5 @@ ios/web/shared
 # Private runtime review bundles and per-session receipts.
 .claude/state/
 capture/*.lock
+__pycache__/
+*.py[cod]
