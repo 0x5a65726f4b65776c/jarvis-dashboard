@@ -1,6 +1,6 @@
 # Learning and final delivery contract
 
-Version: `2026-11-17.1`. Authorized by Nick on 2026-11-17. Applies to every
+Version: `2026-11-21.1`. Maturation authorized by Nick on 2026-11-21. Applies to every
 worker, orchestrator, and reviewer. The owning orchestrator and Hermes are the
 final check before a result reaches Nick. Existing business permissions remain
 in force. A quality pass is never permission to send, spend, sign, or publish.
@@ -23,6 +23,71 @@ in force. A quality pass is never permission to send, spend, sign, or publish.
 - A material finding is corrected internally or clearly disclosed with its
   consequence and recommended action. Routine process details and speculative
   concerns stay internal. Do not manufacture a warning to fill a quota.
+
+## Task scope, current evidence, and bounded work
+
+Before substantive execution, the owning orchestrator records the original request
+and essential acceptance requirements with `scripts/agent_gate.py plan --session
+SESSION --file PATH`. The versioned plan belongs to the existing task key; it is not
+a second work register. Use stable requirement IDs and `must`, `should`, or `could`
+priorities. Every must requirement needs a met acceptance entry with the same
+`requirement_id` and actual supporting evidence before an outcome can be complete.
+Optional improvements never compensate for an omitted essential result. Hermes
+compares the plan with the original request and identifies requirements omitted
+from the plan itself. A material scope change starts a new plan and review.
+Native work dispatch and complete or partial delivery require the registered plan;
+an honestly blocked recovery can still report why work never began.
+
+```json
+{
+  "schema_version": 1,
+  "task_key": "existing-task-id",
+  "request": "Original objective and acceptance conditions",
+  "profile": "task",
+  "requirements": [
+    {"id": "destination", "criterion": "Destination contains the requested result", "priority": "must"}
+  ]
+}
+```
+
+Evidence-dependent research, commercial qualification, and recurring briefs retain
+their canonical records. Bind collected inputs to a frozen collection plan and
+an entity-local evidence manifest as described in `doctrine/evidence_manifest.md`;
+attach its relative path as `evidence_manifest` in the delivery packet. The gate
+checks transitive source versions and dates again at release. A corrected source
+invalidates dependent outputs until revalidated. Preserve source history; never
+silently overwrite a primary document with an interpretation. Remote changes can
+only be detected after an authorized collector refreshes its local receipt, so
+freshness windows remain mandatory where currentness matters.
+
+Use the task plan's `research`, `brief`, or `commercial` profile for those workflows;
+the gate requires their evidence manifest for complete or partial delivery. The
+default `task` profile covers work without a collection stage. A fully blocked run
+may omit a manifest when collection never began, but must name its unresolved work.
+For a partial manifest, each unavailable source has an unresolved entry carrying
+its `source_id`, issue, owner, and next action; a generic unrelated blocker is
+insufficient. Hermes rejects a profile chosen to evade applicable source checks.
+
+Distinguish a successful empty collection from failure, stale input, or unknown
+coverage. A required-source failure prevents claiming a complete collection. A
+partial result names the affected question, limitation, owner, and next action.
+Publish a coherent evidence set only when its required inputs pass; retain the
+previous good result with its original dates on failure. Stage checkpoints bind
+both input versions and output hashes. Resume only the failed or invalidated
+stage; a temporary read error is retryable and is never proof that prior work is
+absent. These records are derived workflow metadata, not a new knowledge store.
+
+`config/maturation.json` binds the repository's entity and execution ceilings.
+The task plan may lower those ceilings, never widen them. Native hooks bound
+observed dispatch counts and time; they do not measure opaque provider spending
+or guarantee cancellation of hosted workers. Adapters using
+`scripts/execution_control.py` must reserve explicit task/child allowances before
+paid calls, reconcile measured spend, preserve a verification reserve, and check
+their lease before committing effects. Unresolved cancellation keeps a reservation
+quarantined. A parked task resumes only with a recorded change to its blocker.
+`doctrine/execution_control.md` defines the supported enforcement boundaries.
+Neither a plan nor a budget reservation grants authority to send, spend, sign,
+change permissions, or perform an otherwise prohibited action.
 
 ## Learning
 
@@ -63,7 +128,8 @@ without the installed client loading the new files and running the hooks.
 
 ## Final review procedure
 
-1. Keep draft replies and evidence in ignored `.claude/state/` until reviewed.
+1. Register the task plan before work and preserve the original requirements.
+   Keep draft replies and evidence in ignored `.claude/state/` until reviewed.
    Write a packet using the schema below and the exact final reply in a UTF-8 file.
 2. Stage them: `python3 scripts/agent_gate.py stage --session SESSION --packet PATH --reply PATH`.
    It returns a release ID; the immutable review bundle is in the session's
@@ -99,7 +165,7 @@ success. Interrupted sessions retain an unfinished-delivery event.
   "summary": "What actually changed",
   "outcome": "complete",
   "evidence": [{"path": ".claude/state/result-receipt.json"}],
-  "acceptance": [{"criterion": "Destination contains the requested result", "met": true,
+  "acceptance": [{"requirement_id": "destination", "criterion": "Destination contains the requested result", "met": true,
     "evidence": [".claude/state/result-receipt.json"]}],
   "claims": [{"kind": "fact", "text": "The requested result is verified",
     "evidence": [".claude/state/result-receipt.json"]}],
@@ -109,6 +175,7 @@ success. Interrupted sessions retain an unfinished-delivery event.
 ```
 
 Evidence entries are real local snapshots/receipts/artifacts, hashed by the gate.
+Every complete delivery covers each must requirement in its frozen task plan.
 Keep source URLs and retrieval times inside those receipts. Add `expires_at` for
 bounded environmental evidence. `partial` and `blocked` require unresolved items
 with `issue`, `owner`, and `next_action`. Separate facts, inferences, assumptions,

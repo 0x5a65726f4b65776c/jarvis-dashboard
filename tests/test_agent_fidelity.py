@@ -33,7 +33,7 @@ skills:
   - example-method
 ---
 CLAUDE.md binds this seat.
-Instruction contract: 2026-11-17.1. Read doctrine/agent_delivery.md.
+Instruction contract: 2026-11-21.1. Read doctrine/agent_delivery.md.
 Learning disposition goes to the owning orchestrator and Hermes.
 """
         self.put("sources/worker.md", self.worker)
@@ -64,6 +64,16 @@ Learning disposition goes to the owning orchestrator and Hermes.
     def test_changed_shared_policy_blocks_old_bundle(self):
         self.put("CLAUDE.md", "Changed principal instruction.\n")
         self.assertIn("changed instruction source: CLAUDE.md", fidelity.check(self.root))
+
+    def test_changed_execution_policy_invalidates_reviewed_bundle(self):
+        self.put("config/maturation.json", '{"entity":"another-entity"}\n')
+        self.assertIn("changed instruction source: config/maturation.json", fidelity.check(self.root))
+
+    def test_commercial_rules_cannot_be_left_out_of_fidelity(self):
+        self.put("config/opportunity_rules.json", '{"schema_version":1}\n')
+        self.assertIn("untracked domain instruction source: config/opportunity_rules.json", fidelity.check(self.root))
+        self.regenerate()
+        self.assertEqual([], fidelity.check(self.root))
 
     def test_hash_update_alone_does_not_bless_a_stale_generated_agent(self):
         self.put(".claude/agents/worker.md", self.worker + "Hand-edited behavior.\n")

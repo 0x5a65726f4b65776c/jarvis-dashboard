@@ -53,6 +53,7 @@ class ConnectionHandler {
       allowedTools: toolsToApprove,
       interactivePermissions: useInteractivePerms,
       supportedLangs: langConfig.supported || {},
+      executionTimeoutMs: companionConfig.executionTimeoutMs,
     });
 
     this._rawConfig = rawConfig;

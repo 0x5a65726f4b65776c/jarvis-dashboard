@@ -18,5 +18,14 @@ jobs:
         run: python3 scripts/check_agent_fidelity.py
       - name: Verify final-delivery refusal and review cases
         run: python3 -m unittest discover -s tests -p 'test_agent_*.py'
+      - name: Verify source freshness, recovery, and execution limits
+        run: |
+          python3 -m unittest discover -s tests -p "test_evidence_manifest.py"
+          python3 -m unittest discover -s tests -p "test_execution_control.py"
       - name: Verify learning promotion and recurrence evidence
         run: python3 scripts/test_learning_evidence.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify companion cancellation and delivery integrity
+        run: node --test companion/tests/*.test.js

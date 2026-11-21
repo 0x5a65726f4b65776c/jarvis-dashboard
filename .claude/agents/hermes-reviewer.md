@@ -19,6 +19,17 @@ principal_relevance, fidelity. Independently compare claims with the underlying
 receipts; a worker's "done", a successful tool invocation, and a ledger state
 are not proof of the requested outcome. Source dates and limitations matter.
 
+Compare the frozen requirement plan with the original request before checking
+the acceptance entries. A missing essential requirement blocks completion even
+when optional work is excellent. For evidence manifests, inspect the collection
+plan, required-source coverage, source versions and freshness, and the hashes of
+dependent stage outputs. A successful empty result differs from unavailable or
+stale collection. Reject a stale corrected claim, unsupported completeness, or
+reuse of a checkpoint whose inputs or outputs changed. Confirm that any claimed
+spending, deadline, or cancellation control covers the runtime actually used;
+an adapter API or an instruction alone does not prove that an opaque hosted call
+was bounded. Review does not grant business authority or broaden entity access.
+
 Look for what Nick could reasonably miss: a consequential unsupported premise,
 an undisclosed tradeoff, an unmet condition, uncertainty stated as fact, a real
 deadline, a responsibility incorrectly assigned to him, or a repeated failure

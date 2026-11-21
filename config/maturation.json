@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "entity": "jarvis",
+  "contract_version": "2026-11-21.1",
+  "execution": {
+    "max_dispatches": 32,
+    "review_dispatches": 4,
+    "deadline_seconds": 7200,
+    "review_grace_seconds": 900,
+    "max_concurrent": 4
+  }
+}
