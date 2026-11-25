@@ -208,7 +208,7 @@
             "timeout": 40
           }
         ],
-        "matcher": "Agent|Task"
+        "matcher": "Agent|Task|Read"
       }
     ],
     "PostToolUse": [
@@ -220,7 +220,7 @@
             "timeout": 40
           }
         ],
-        "matcher": "SubagentHandback"
+        "matcher": "SubagentHandback|Read"
       }
     ]
   }

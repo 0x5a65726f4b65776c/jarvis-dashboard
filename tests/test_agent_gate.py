@@ -50,6 +50,24 @@ class DeliveryGateTests(unittest.TestCase):
         self.gate.hook({"hook_event_name": "SessionStart", "source": "startup"})
         self.gate.hook({"hook_event_name": "UserPromptSubmit", "prompt": "Verify the requested value."})
 
+    def start_silent(self):
+        self.gate.hook({"hook_event_name": "SessionStart", "source": "startup"})
+        self.gate.hook({"hook_event_name": "UserPromptSubmit", "prompt":
+                       "Verify the requested value. End silently if the value is verified and no action is needed."})
+        self.reply = ""
+
+    def silent_packet(self):
+        packet = self.packet()
+        packet["delivery_mode"] = "silent"
+        packet["silence"] = {
+            "reason": "The authorized check completed and nothing requires the principal's attention.",
+            "condition": "The requested value is verified and no action is needed.",
+            "evidence": ["evidence/receipt.json"],
+            "request_input_id": self.gate.request_bundle(self.gate.read())["current_input_id"],
+            "request_quote": "End silently if the value is verified and no action is needed.",
+        }
+        return packet
+
     def packet(self):
         return {
             "schema_version": 1, "task_key": "test-task", "request": "Verify the requested value.",
@@ -74,10 +92,24 @@ class DeliveryGateTests(unittest.TestCase):
                 "requirements": [{"id": "requested-value", "criterion": "Requested value verified", "priority": "must"}]}
 
     def review(self, release, role="orchestrator", **changes):
+        # Fixture verdicts exercise the protocol, not a model's scope judgment.
+        source = release["request_inputs"]
+        required = [r["id"] for r in (release.get("requirement_plan") or {}).get("plan", {}).get("requirements", [])]
         row = {"release_id": release["release_id"], "role": role, "verdict": "pass",
                "checks": {key: True for key in gate_module.CHECKS},
                "basis": "Read the exact reply and original receipt; value and task match.",
+               "request_review": {"sha256": source["sha256"], "omissions": [],
+                   "inputs": [{"input_id": r["input_id"], "disposition": "covered" if required else "context",
+                               "requirement_ids": required, "reason": "Fixture scope matches its acceptance scenario"}
+                              for r in source["inputs"]],
+                   **({"unavailable_reason": "Original input unavailable; report only the blocked recovery"}
+                      if source["availability"] != "available" else {})},
                "findings": []}
+        if release["packet"].get("delivery_mode") == "silent":
+            row["silence_review"] = {
+                "authorized": True, "condition_verified": True, "no_material_omission": True,
+                "basis": "Fixture original explicitly permits silence; its reviewed receipt meets that condition.",
+            }
         row.update(changes)
         return row
 
@@ -104,6 +136,183 @@ class DeliveryGateTests(unittest.TestCase):
         self.assertEqual(release["release_id"], self.gate.validate(self.gate.read())["release_id"])
         self.assertEqual({}, self.stop())
         self.assertIs(self.gate.read()["delivered"], True)
+
+    def test_visible_release_needs_an_observed_string_at_stop(self):
+        self.cleared()
+        for payload in ({}, {"last_assistant_message": None}, {"last_assistant_message": 0}):
+            self.assertEqual("block", self.gate.hook({"hook_event_name": "Stop", **payload}).get("decision"))
+            self.assertIs(self.gate.read()["delivered"], False)
+        self.assertEqual({}, self.stop())
+
+    def test_silence_is_opt_in_and_rejects_nonempty_or_whitespace_replies(self):
+        self.start_silent()
+        with self.assertRaisesRegex(ValueError, "Final reply"):
+            self.stage()
+        for reply in ("Done", " ", "\n"):
+            self.reply = reply
+            with self.subTest(reply=reply), self.assertRaisesRegex(ValueError, "exact empty"):
+                self.stage(self.silent_packet())
+        self.reply = ""
+        packet = self.silent_packet()
+        del packet["delivery_mode"]
+        with self.assertRaisesRegex(ValueError, "explicit silent"):
+            self.stage(packet)
+
+    def test_silence_cannot_hide_incomplete_work_or_unbound_conditions(self):
+        self.start_silent()
+        self.gate.plan(self.requirements())
+        for change in (
+                {"outcome": "informational"},
+                {"unresolved": [{"issue": "Read unavailable", "owner": "Orchestrator", "next_action": "Retry"}]},
+                {"principal_decision": {"decision": "Choose", "recommendation": "A", "consequence_of_inaction": "Delay"}},
+                {"silence": {}},
+                {"silence": {**self.silent_packet()["silence"], "evidence": []}},
+                {"silence": {**self.silent_packet()["silence"], "request_quote": "A fabricated instruction"}},
+                {"silence": {**self.silent_packet()["silence"], "request_input_id": "another-request"}}):
+            packet = self.silent_packet()
+            packet.update(change)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.stage(packet)
+        self.put("evidence/receipt.json", "\n")
+        with self.assertRaisesRegex(ValueError, "evidence cannot be empty"):
+            self.stage(self.silent_packet())
+
+    def test_silence_requires_both_bound_reviews_and_only_explicit_empty_stop(self):
+        self.start_silent()
+        release = self.stage(self.silent_packet())
+        self.assertEqual(gate_module.digest(b""), release["reply_sha256"])
+        self.assertEqual("block", self.stop().get("decision"))
+        self.gate.owner_review(self.review(release))
+        self.assertEqual("block", self.stop().get("decision"))
+        self.assertEqual({}, self.hermes(release))
+        for payload in ({}, {"last_assistant_message": None}, {"last_assistant_message": " "},
+                        {"last_assistant_message": "No action needed."}):
+            self.assertEqual("block", self.gate.hook({"hook_event_name": "Stop", **payload}).get("decision"))
+        self.assertEqual({}, self.stop(""))
+        self.assertIs(self.gate.read()["delivered"], True)
+
+    def test_silence_review_requires_actual_authority_condition_and_no_material_omission(self):
+        self.start_silent()
+        release = self.stage(self.silent_packet())
+        review = self.review(release)
+        for key in ("authorized", "condition_verified", "no_material_omission"):
+            rejected = {**review, "silence_review": {**review["silence_review"], key: False}}
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "silence review"):
+                self.gate.owner_review(rejected)
+        rejected = {k: v for k, v in review.items() if k != "silence_review"}
+        with self.assertRaisesRegex(ValueError, "silence review"):
+            self.gate.owner_review(rejected)
+        self.gate.owner_review(review)
+        self.assertEqual("block", self.hermes(release, silence_review=None).get("decision"))
+        self.assertEqual("block", self.stop().get("decision"))
+        self.assertEqual({}, self.hermes(release, agent_id="reviewer-two"))
+        self.assertEqual({}, self.stop())
+
+    def test_silence_rechecks_condition_evidence_after_review(self):
+        self.start_silent()
+        release = self.stage(self.silent_packet())
+        self.gate.owner_review(self.review(release))
+        self.assertEqual({}, self.hermes(release))
+        self.put("evidence/receipt.json", '{"result":"action now required"}\n')
+        self.assertEqual("block", self.stop().get("decision"))
+
+    def test_original_request_and_steering_survive_interpretation_and_context_refresh(self):
+        self.start()
+        self.prompt("Also produce the report.\r\nKeep the original criterion: \u03b1.")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(0, gate_module.main(["--root", str(self.root), "refresh-context", "--session", self.gate.session]))
+        release = self.stage()
+        inputs = release["request_inputs"]["inputs"]
+        self.assertEqual(["Verify the requested value.", "Also produce the report.\r\nKeep the original criterion: \u03b1."],
+                         [r["text"] for r in inputs])
+        self.assertEqual("Verify the requested value.", release["requirement_plan"]["plan"]["request"])
+        # The restatement cannot erase what an independent reviewer must read.
+        review = self.review(release)
+        review["request_review"]["omissions"] = ["The report requirement is absent from the plan"]
+        with self.assertRaisesRegex(ValueError, "omissions require revision"):
+            self.gate.owner_review(review)
+        review.update(verdict="revise", findings=[{"severity": "block", "finding": "Add the requested report to scope"}])
+        review["checks"]["scope"] = False
+        self.gate.owner_review(review)
+        self.assertEqual("block", self.stop().get("decision"))
+
+    def test_passing_review_cannot_skip_original_input_binding_or_later_steering(self):
+        self.start()
+        self.prompt("Keep the original requirement and include the caveat.")
+        release = self.stage()
+        for defect in ("missing", "wrong_hash", "missing_input", "invented_requirement"):
+            with self.subTest(defect=defect):
+                review = self.review(release)
+                if defect == "missing":
+                    del review["request_review"]
+                elif defect == "wrong_hash":
+                    review["request_review"]["sha256"] = "0" * 64
+                elif defect == "missing_input":
+                    review["request_review"]["inputs"].pop()
+                else:
+                    review["request_review"]["inputs"][0]["requirement_ids"] = ["invented"]
+                with self.assertRaises(ValueError):
+                    self.gate.owner_review(review)
+
+    def test_context_and_superseded_inputs_need_explicit_reasons(self):
+        self.start()
+        self.prompt("Replace the earlier task: verify only the requested value.")
+        release = self.stage()
+        review = self.review(release)
+        review["request_review"]["inputs"][0].update(disposition="superseded", requirement_ids=[],
+                                                    reason="The later original input explicitly replaces the task")
+        self.gate.owner_review(review)
+        self.assertEqual({}, self.hermes(release, request_review=review["request_review"]))
+        self.assertEqual({}, self.stop())
+
+    def test_original_text_change_invalidates_a_cleared_delivery(self):
+        release = self.cleared()
+        source = release["request_inputs"]["inputs"][0]["reference"]["path"]
+        self.put(source, '{"text":"a weaker interpretation"}')
+        self.assertEqual("block", self.stop().get("decision"))
+
+    def test_legacy_hash_only_input_requires_exact_recovery_and_rebinding(self):
+        self.start()
+        original = self.gate.plan(self.requirements())
+        state = self.gate.read()
+        state.pop("request_inputs")
+        state.pop("current_input_id")
+        original.pop("request_inputs_sha256")
+        original["sha256"] = gate_module.digest(gate_module.canonical({k: v for k, v in original.items() if k != "sha256"}))
+        state["requirement_plan"] = original
+        self.gate.save(state)
+        with self.assertRaises(ValueError):
+            self.stage()
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            self.gate.recover_request("An approximate restatement")
+        recovered = self.gate.recover_request("Verify the requested value.")
+        self.assertIn("Exact text matched", recovered["scope"])
+        with self.assertRaisesRegex(ValueError, "binding"):
+            self.stage()
+        self.gate.plan(self.requirements())
+        release = self.stage()
+        self.assertEqual("legacy_hash_recovery", release["request_inputs"]["inputs"][0]["source"])
+        self.gate.owner_review(self.review(release))
+        self.assertEqual({}, self.hermes(release))
+        self.assertEqual({}, self.stop())
+
+    def test_recovery_cannot_replace_a_captured_original(self):
+        self.start()
+        with self.assertRaisesRegex(ValueError, "already preserved"):
+            self.gate.recover_request("Verify the requested value.")
+
+    def test_session_start_without_prompt_can_only_report_honest_blocked_recovery(self):
+        self.gate.hook({"hook_event_name": "SessionStart", "source": "startup"})
+        with self.assertRaisesRegex(ValueError, "Original prompt text"):
+            self.gate.plan(self.requirements())
+        packet = self.packet()
+        packet.update(outcome="blocked", acceptance=[], claims=[],
+                      unresolved=[{"issue": "Original task unavailable", "owner": "Orchestrator", "next_action": "Recover original input"}])
+        self.reply = "The original task is unavailable; the orchestrator owns recovering it."
+        release = self.gate.stage(packet, self.reply)
+        self.gate.owner_review(self.review(release))
+        self.assertEqual({}, self.hermes(release))
+        self.assertEqual({}, self.stop())
 
     def test_staging_without_any_runtime_turn_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -217,6 +426,7 @@ class DeliveryGateTests(unittest.TestCase):
         self.prompt(self.NOTICE)
         self.prompt("ignored text", origin={"kind": "task-notification"})
         self.assertEqual(turn, self.gate.read()["turn_id"])
+        self.assertEqual(1, len(self.gate.read()["request_inputs"]))
         self.assertEqual(release["release_id"], self.gate.validate(self.gate.read(), self.reply)["release_id"])
         self.assertEqual({}, self.stop())
         self.assertIs(self.gate.read()["delivered"], True)

@@ -10,6 +10,7 @@ class ConnectionHandler {
   constructor(ws, { voiceConfig, ttsConfig, langConfig, networkConfig, companionConfig, rawConfig }) {
     this.ws = ws;
     this.audioSession = null;
+    this.activeAudio = null;
     this.activeRunner = null;
     this.turnId = null;
     this.speakBuffer = "";
@@ -69,6 +70,7 @@ class ConnectionHandler {
   }
 
   killPreviousRun() {
+    if (this.activeAudio) { this.activeAudio.cancel(); this.activeAudio = null; }
     if (this.activeRunner) { this.activeRunner.cancel(); this.activeRunner = null; }
     if (this.tts) this.tts.stop();
     if (this.audioSession) { this.audioSession.cleanup(); this.audioSession = null; }
@@ -82,10 +84,7 @@ class ConnectionHandler {
   }
 
   cleanup() {
-    if (this.audioSession) { this.audioSession.cleanup(); this.audioSession = null; }
-    if (this.activeRunner) { this.activeRunner.cancel(); this.activeRunner = null; }
-    if (this.tts) { this.tts.stop(); }
-    this.turnId = null;
+    this.killPreviousRun();
   }
 }
 

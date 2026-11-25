@@ -71,17 +71,43 @@
       // Tauri streams stdout/stderr via events.
       const id = crypto.randomUUID();
       const listeners = { stdout: [], stderr: [], close: [], error: [] };
+      const stdinErrors = [];
+      const unlisten = [];
+      let spawned = false, spawning = false, closed = false, cancelRequested = false, killRequested = false;
 
       // Track when spawn completes so stdin.write waits for the process to be ready
       let _spawnResolve;
       const _spawnReady = new Promise(r => { _spawnResolve = r; });
+
+      const finishClose = (code) => {
+        if (closed) return;
+        closed = true;
+        child.stdin.writable = false;
+        _spawnResolve();
+        listeners.close.forEach(cb => cb(code));
+        unlisten.splice(0).forEach(u => u());
+      };
+      const requestKill = () => {
+        if (!spawned || closed || killRequested) return;
+        killRequested = true;
+        // Rust owns the process group and bounded escalation for this UUID.
+        invoke("kill_process", { id }).catch(err => child.emit("error", err));
+      };
 
       const child = {
         pid: null,
         _id: id,
         // Process-level events: close, error
         on(event, cb) { (listeners[event] || []).push(cb); return child; },
-        kill() { invoke("kill_process", { id }).catch(() => {}); },
+        emit(event, ...args) { (listeners[event] || []).forEach(cb => cb(...args)); },
+        kill() {
+          cancelRequested = true;
+          child.stdin.writable = false;
+          if (!spawned && !spawning) finishClose(-1);
+          requestKill();
+          return true;
+        },
+        killTree() { return child.kill(); },
         // Node.js ChildProcess has stdout/stderr as stream-like objects
         stdout: {
           on(event, cb) {
@@ -97,59 +123,57 @@
         },
         stdin: {
           writable: true,
+          on(event, cb) { if (event === "error") stdinErrors.push(cb); return child.stdin; },
           write(data) {
             // Wait for spawn to complete before writing to stdin
             _spawnReady.then(() => {
+              if (!spawned || closed || cancelRequested) return;
               invoke("stdin_write", { id, data }).catch(e => {
-                console.error("[tauri-adapter] stdin_write error:", e);
+                stdinErrors.forEach(cb => cb(e));
               });
             });
           },
           end() {
             child.stdin.writable = false;
             _spawnReady.then(() => {
+              if (!spawned || closed || cancelRequested) return;
               invoke("stdin_close", { id }).catch(e => {
-                console.error("[tauri-adapter] stdin_close error:", e);
+                stdinErrors.forEach(cb => cb(e));
               });
             });
           },
         },
       };
 
-      // Start process — wait for any pending binary file write first (e.g. WAV before whisper)
-      const doSpawn = () => invoke("spawn_process", { id, program, args, opts: opts || {} })
-        .then(pid => {
-          child.pid = pid;
-          _spawnResolve(); // Signal spawn complete — stdin writes can proceed
-        })
-        .catch(err => {
-          console.error("[tauri-adapter] spawn failed:", program, err);
-          _spawnResolve(); // Unblock pending writes even on error
-          listeners.error.forEach(cb => cb(err));
-        });
-
-      if (window.__pendingBinaryWrite) {
-        const pending = window.__pendingBinaryWrite;
-        window.__pendingBinaryWrite = null;
-        pending.then(doSpawn, doSpawn); // spawn even if write failed
-      } else {
-        doSpawn();
-      }
-
-      // Listen for Tauri events from the Rust side
-      const unlisten = [];
+      // Subscribe before spawning so even an immediate exit has a close event.
+      const subscriptions = [];
       if (window.__TAURI__.event) {
         const { listen } = window.__TAURI__.event;
-        listen(`process-stdout-${id}`, e => listeners.stdout.forEach(cb => cb(e.payload)))
-          .then(u => unlisten.push(u));
-        listen(`process-stderr-${id}`, e => listeners.stderr.forEach(cb => cb(e.payload)))
-          .then(u => unlisten.push(u));
-        listen(`process-close-${id}`, e => {
-          child.stdin.writable = false;
-          listeners.close.forEach(cb => cb(e.payload));
-          unlisten.forEach(u => u());
-        }).then(u => unlisten.push(u));
+        subscriptions.push(
+          listen(`process-stdout-${id}`, e => { if (!closed && !cancelRequested) listeners.stdout.forEach(cb => cb(e.payload)); }),
+          listen(`process-stderr-${id}`, e => { if (!closed && !cancelRequested) listeners.stderr.forEach(cb => cb(e.payload)); }),
+          listen(`process-close-${id}`, e => finishClose(e.payload))
+        );
       }
+
+      const pendingWrite = window.__pendingBinaryWrite;
+      if (pendingWrite) window.__pendingBinaryWrite = null;
+      Promise.all(subscriptions.map(p => p.then(u => closed ? u() : unlisten.push(u))))
+        .then(() => pendingWrite?.catch(() => {}))
+        .then(() => {
+          if (cancelRequested) { finishClose(-1); return; }
+          spawning = true;
+          return invoke("spawn_process", { id, program, args, opts: opts || {} }).then(pid => {
+            child.pid = pid;
+            spawned = true;
+            if (cancelRequested) requestKill();
+            _spawnResolve();
+          });
+        })
+        .catch(err => {
+          child.emit("error", err);
+          finishClose(-1);
+        });
 
       return child;
     },

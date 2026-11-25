@@ -13,7 +13,7 @@ class MessageRouter {
 
   route(msg, conn, pipeline) {
     const handler = this._handlers.get(msg.type);
-    if (handler) handler(msg, conn, pipeline);
+    if (handler) return handler(msg, conn, pipeline);
   }
 
   setBinaryHandler(fn) {
@@ -21,7 +21,7 @@ class MessageRouter {
   }
 
   routeBinary(buffer, conn, pipeline) {
-    if (this._binaryHandler) this._binaryHandler(buffer, conn, pipeline);
+    if (this._binaryHandler) return this._binaryHandler(buffer, conn, pipeline);
   }
 }
 

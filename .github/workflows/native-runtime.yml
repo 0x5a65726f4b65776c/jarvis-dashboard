@@ -1,0 +1,36 @@
+name: Native runtime integrity
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  native-runtime:
+    name: macOS process cancellation and build
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify macOS build prerequisites
+        run: |
+          xcode-select -p
+          xcrun --show-sdk-path
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: macos/src-tauri -> target
+      - name: Prepare shared frontend assets
+        run: node macos/scripts/setup-symlinks.js
+      - name: Compile and test native process ownership
+        working-directory: macos/src-tauri
+        run: cargo test --locked --lib
+      - name: Check production frontend and all native targets
+        working-directory: macos/src-tauri
+        run: cargo check --locked --all-targets --features custom-protocol

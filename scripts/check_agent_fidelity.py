@@ -22,6 +22,8 @@ SHARED_PATHS = (
     "AGENTS.md",
     "doctrine/agent_delivery.md",
     "scripts/agent_gate.py",
+    "scripts/runtime_probe.py",
+    "scripts/routine_receipt.py",
     "scripts/learning_evidence.py",
     "config/maturation.json",
     "scripts/evidence_manifest.py",

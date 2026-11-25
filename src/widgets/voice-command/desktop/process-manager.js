@@ -5,9 +5,16 @@ const { nodeFs, nodePath, config } = ctx;
 const cmdCfg = config.widgets?.voiceCommand || {};
 const interactiveCfg = cmdCfg.interactive || {};
 const personalityCfg = cmdCfg.personality || {};
+const MAX_EXECUTION_MS = 2 * 60 * 60 * 1000;
+const TERMINATION_GRACE_MS = 2000;
 
 function createProcessManager(options) {
-  const { storageAdapter, stripAnsi } = options;
+  const { storageAdapter, stripAnsi, schedule = setTimeout, cancelTimer = clearTimeout,
+    killProcessGroup = (pid, signal) => process.kill(-pid, signal) } = options;
+  const executionTimeoutMs = cmdCfg.executionTimeoutMs ?? MAX_EXECUTION_MS;
+  if (!Number.isSafeInteger(executionTimeoutMs) || executionTimeoutMs <= 0 || executionTimeoutMs > MAX_EXECUTION_MS) {
+    throw new Error("executionTimeoutMs must be a positive integer no greater than two hours");
+  }
 
   // ── Resolve claude binary path ──
   const claudeSearchPaths = [
@@ -23,6 +30,81 @@ function createProcessManager(options) {
   }
 
   let claudeProcess = null;
+
+  function signalRun(run, signal) {
+    if (run.closed) return;
+    // Native adapters own their process registry and escalation. Their IDs are
+    // not operating-system PIDs that the browser's process shim can signal.
+    if (typeof run.process.killTree === "function") {
+      try { run.process.killTree(signal); } catch {}
+      return;
+    }
+    if (process.platform !== "win32" && Number.isInteger(run.process.pid) && run.process.pid > 0) {
+      try { killProcessGroup(run.process.pid, signal); return; } catch {}
+    }
+    try { run.process.kill(signal); } catch {}
+  }
+
+  function stopRun(run) {
+    if (run.closed || run.stopRequested) return;
+    run.stopRequested = true;
+    if (claudeProcess === run.process) claudeProcess = null;
+    cancelTimer(run.deadlineTimer);
+    signalRun(run, "SIGTERM");
+    if (typeof run.process.killTree !== "function") {
+      run.killTimer = schedule(() => signalRun(run, "SIGKILL"), TERMINATION_GRACE_MS);
+      run.killTimer?.unref?.();
+    }
+  }
+
+  function stopCurrentProcess() {
+    if (!claudeProcess) return;
+    // A restored process may belong to the prior widget instance. Only its
+    // original owner knows whether it was launched into a private group.
+    if (claudeProcess._jarvisCancel) claudeProcess._jarvisCancel();
+    else { try { claudeProcess.kill("SIGTERM"); } catch {} }
+    claudeProcess = null;
+  }
+
+  function spawnOwned(args, cwd) {
+    stopCurrentProcess();
+    const { spawn } = require("child_process");
+    const childEnv = Object.assign({}, process.env, { FORCE_COLOR: "0" });
+    delete childEnv.CLAUDECODE;
+    delete childEnv.CLAUDE_CODE_ENTRYPOINT;
+    delete childEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
+    const proc = spawn(claudePath, args, {
+      cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+    });
+    const run = { process: proc, closed: false, stopRequested: false };
+    proc._jarvisCancel = () => stopRun(run);
+    proc.on("close", () => {
+      if (run.stopRequested && typeof proc.killTree !== "function" && process.platform !== "win32"
+        && Number.isInteger(proc.pid) && proc.pid > 0) {
+        // The leader can exit before a descendant. Finish the owned group now,
+        // then discard its timer instead of signaling a recycled PID later.
+        try { killProcessGroup(proc.pid, "SIGKILL"); } catch {}
+      }
+      run.closed = true;
+      cancelTimer(run.killTimer);
+      cancelTimer(run.deadlineTimer);
+      if (claudeProcess === proc) claudeProcess = null;
+    });
+    const fail = () => stopRun(run);
+    proc.on("error", fail);
+    proc.stdin?.on?.("error", fail);
+    run.deadlineTimer = schedule(() => {
+      if (run.closed || run.stopRequested) return;
+      stopRun(run);
+      // Both Node and the native adapter deliver this through the existing UI
+      // failure handler; a late successful result cannot clear the timed-out turn.
+      proc.emit("error", new Error("Execution deadline reached; cancellation requested. Resume from recorded evidence."));
+    }, executionTimeoutMs);
+    run.deadlineTimer?.unref?.();
+    claudeProcess = proc;
+    return proc;
+  }
 
   function buildPersonalityPrompt() {
     const template = personalityCfg.prompt;
@@ -64,16 +146,9 @@ function createProcessManager(options) {
 
   function spawnProcess(currentSessionId, cwd) {
     if (!claudePath) return null;
-    const { spawn } = require("child_process");
-    const childEnv = Object.assign({}, process.env, { FORCE_COLOR: "0" });
-    delete childEnv.CLAUDECODE;
-    delete childEnv.CLAUDE_CODE_ENTRYPOINT;
-    delete childEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
     const args = buildClaudeArgs(currentSessionId);
     const deliveryRun = { projectPath: nodePath.resolve(cwd), startedAt: new Date().toISOString() };
-    claudeProcess = spawn(claudePath, args, {
-      cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"],
-    });
+    claudeProcess = spawnOwned(args, cwd);
     claudeProcess._jarvisDelivery = Object.freeze(deliveryRun);
     return claudeProcess;
   }
@@ -100,12 +175,6 @@ function createProcessManager(options) {
     st.deliveryReview = null;
     st.buffer = "";
 
-    const { spawn } = require("child_process");
-    const childEnv = Object.assign({}, process.env, { FORCE_COLOR: "0" });
-    delete childEnv.CLAUDECODE;
-    delete childEnv.CLAUDE_CODE_ENTRYPOINT;
-    delete childEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
-
     const args = buildClaudeArgs(st.sessionId);
     if (approvedTools.length > 0) {
       const idx = args.indexOf("--allowedTools");
@@ -121,10 +190,7 @@ function createProcessManager(options) {
     st.projectPath = nodePath.resolve(cwd);
     st.startedAt = new Date().toISOString();
     st.submittedPrompt = "Permission granted. Please retry the file operation.";
-    const newProc = spawn(claudePath, args, {
-      cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"],
-    });
-    claudeProcess = newProc;
+    const newProc = spawnOwned(args, cwd);
     st.process = newProc;
     st.uiState = "streaming";
 
@@ -154,20 +220,11 @@ function createProcessManager(options) {
     st.deliveryReview = null;
     st.buffer = "";
 
-    const { spawn } = require("child_process");
-    const childEnv = Object.assign({}, process.env, { FORCE_COLOR: "0" });
-    delete childEnv.CLAUDECODE;
-    delete childEnv.CLAUDE_CODE_ENTRYPOINT;
-    delete childEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
-
     const args = buildClaudeArgs(st.sessionId);
     st.projectPath = nodePath.resolve(cwd);
     st.startedAt = new Date().toISOString();
     st.submittedPrompt = answerText;
-    const newProc = spawn(claudePath, args, {
-      cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"],
-    });
-    claudeProcess = newProc;
+    const newProc = spawnOwned(args, cwd);
     st.process = newProc;
 
     newProc.stdin.write(JSON.stringify({
@@ -184,10 +241,7 @@ function createProcessManager(options) {
       st.tempPermissions.forEach(entry => storageAdapter.removeSettingsPermission(entry));
       st.tempPermissions = [];
     }
-    if (claudeProcess) {
-      try { claudeProcess.kill("SIGTERM"); } catch (e) {}
-      claudeProcess = null;
-    }
+    stopCurrentProcess();
     if (typeof window !== "undefined") window.__jarvisStreamState = null;
   }
 

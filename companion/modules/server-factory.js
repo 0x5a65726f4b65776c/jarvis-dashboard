@@ -36,14 +36,15 @@ function createServer(config) {
     idleTimeoutMs: companionConfig.idleTimeoutMs ?? 300000,
   });
 
-  // Initialize transcriber
-  const transcriber = new Transcriber({
+  // Configuration is shared; an active transcription belongs to one connection.
+  const transcriberConfig = {
     whisperPath: companionConfig.whisperPath,
     whisperModel: companionConfig.whisperModel || voiceConfig.whisperModel || rawConfig.widgets?.quickCapture?.voice?.whisperModel,
     whisperLang: langConfig.stt || companionConfig.whisperLang || rawConfig.widgets?.quickCapture?.voice?.lang || "en",
-  });
+  };
+  const transcriptionAvailable = new Transcriber(transcriberConfig).isAvailable;
 
-  if (!transcriber.isAvailable) {
+  if (!transcriptionAvailable) {
     console.warn("[JARVIS] whisper-cli not available. Voice commands will not work. Text commands still functional.");
   }
 
@@ -91,19 +92,29 @@ function createServer(config) {
     });
     conn.resetActivity = resetActivity;
 
+    const transcriber = new Transcriber(transcriberConfig);
     const pipeline = new VoicePipeline(conn, { transcriber, langConfig });
 
     ws.on("message", async (raw, isBinary) => {
-      resetActivity();
-
-      if (isBinary) {
-        router.routeBinary(raw, conn, pipeline);
-        return;
+      try {
+        resetActivity();
+        if (isBinary) {
+          await router.routeBinary(raw, conn, pipeline);
+          return;
+        }
+        const msg = protocol.parse(raw.toString("utf8"));
+        if (!msg) {
+          conn.send(protocol.error("protocol", "Invalid message"));
+          return;
+        }
+        await router.route(msg, conn, pipeline);
+      } catch (err) {
+        // A faulty authorized client or failed handler must not take down other
+        // connections through the process-wide unhandled-rejection handler.
+        console.error("[JARVIS] Message failed:", err);
+        try { conn.cleanup(); } catch {}
+        try { conn.send(protocol.error("protocol", "Message could not be processed")); } catch {}
       }
-
-      const msg = protocol.parse(raw.toString("utf8"));
-      if (!msg) return;
-      router.route(msg, conn, pipeline);
     });
 
     ws.on("close", (code, reason) => {
@@ -215,7 +226,7 @@ function createServer(config) {
           if (hostname) console.log(`[JARVIS] LAN: wss://${hostname}:${port}`);
         } catch {}
 
-        console.log(`[JARVIS] whisper-cli: ${transcriber.isAvailable ? "available" : "NOT FOUND"}`);
+        console.log(`[JARVIS] whisper-cli: ${transcriptionAvailable ? "available" : "NOT FOUND"}`);
         console.log(`[JARVIS] STT language: ${langConfig.stt || companionConfig.whisperLang || "en"}`);
         console.log(`[JARVIS] TTS mode: ${networkConfig.mobileTts || "local"}`);
         console.log(`[JARVIS] Max connections: ${companionConfig.maxConnections ?? 2}`);

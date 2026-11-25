@@ -452,6 +452,7 @@ window.__macosBootstrap = async function () {
       // inherits the parent env and only needs additions + removals.
       const tauriOpts = {};
       if (opts?.cwd) tauriOpts.cwd = opts.cwd;
+      if (opts?.detached === true) tauriOpts.detached = true;
       // Extract env additions (skip process.env inherited keys — they don't exist here)
       if (opts?.env) {
         const additions = {};

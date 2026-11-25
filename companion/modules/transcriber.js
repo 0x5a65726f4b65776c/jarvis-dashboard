@@ -6,12 +6,15 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 
 class Transcriber {
-  constructor(config) {
+  constructor(config, { spawnProcess = spawn, schedule = setTimeout, cancelTimer = clearTimeout } = {}) {
+    this._spawn = spawnProcess;
+    this._schedule = schedule;
+    this._cancelTimer = cancelTimer;
     this._whisperPath = config.whisperPath || "/opt/homebrew/bin/whisper-cli";
     this._modelPath = config.whisperModel || "/opt/homebrew/share/whisper-cpp/ggml-base.en.bin";
     this._lang = config.whisperLang || "en";
     this._autoDetect = this._lang === "auto";
-    this._activeProcess = null;
+    this._activeRun = null;
 
     // Validate: English-only model cannot auto-detect
     if (this._autoDetect && this._modelPath.includes(".en.")) {
@@ -26,36 +29,51 @@ class Transcriber {
   }
 
   transcribe(wavPath) {
+    this.cancel();
     return new Promise((resolve, reject) => {
       if (!this.isAvailable) {
         reject(new Error(`whisper-cli not found at ${this._whisperPath} or model missing at ${this._modelPath}`));
         return;
       }
 
-      this._activeProcess = spawn(this._whisperPath, [
-        "-m", this._modelPath,
-        "-f", wavPath,
-        "--no-timestamps",
-        "-l", this._autoDetect ? "auto" : this._lang,
-
-
-      ]);
+      const run = { process: null, closed: false, settled: false, reject };
+      let proc;
+      try {
+        proc = this._spawn(this._whisperPath, [
+          "-m", this._modelPath,
+          "-f", wavPath,
+          "--no-timestamps",
+          "-l", this._autoDetect ? "auto" : this._lang,
+        ]);
+      } catch (err) {
+        try { fs.unlinkSync(wavPath); } catch {}
+        reject(err);
+        return;
+      }
+      run.process = proc;
+      this._activeRun = run;
+      const finish = () => {
+        run.closed = true;
+        this._cancelTimer(run.killTimer);
+        if (this._activeRun === run) this._activeRun = null;
+        try { fs.unlinkSync(wavPath); } catch {}
+      };
 
       let result = "";
       let errorOutput = "";
 
-      this._activeProcess.stdout.on("data", (data) => {
+      proc.stdout.on("data", (data) => {
         result += data.toString();
       });
 
-      this._activeProcess.stderr.on("data", (data) => {
+      proc.stderr.on("data", (data) => {
         errorOutput += data.toString();
       });
 
-      this._activeProcess.on("close", (code) => {
-        this._activeProcess = null;
-        // Clean up WAV file after transcription
-        try { fs.unlinkSync(wavPath); } catch {}
+      proc.on("close", (code) => {
+        finish();
+        if (run.settled) return;
+        run.settled = true;
 
         if (code !== 0) {
           reject(new Error(`whisper-cli exited with code ${code}: ${errorOutput.trim()}`));
@@ -81,19 +99,26 @@ class Transcriber {
         resolve({ text: text || "", detectedLang });
       });
 
-      this._activeProcess.on("error", (err) => {
-        this._activeProcess = null;
-        try { fs.unlinkSync(wavPath); } catch {}
+      proc.on("error", (err) => {
+        finish();
+        if (run.settled) return;
+        run.settled = true;
         reject(new Error(`whisper-cli error: ${err.message}`));
       });
     });
   }
 
   cancel() {
-    if (this._activeProcess) {
-      try { this._activeProcess.kill("SIGTERM"); } catch {}
-      this._activeProcess = null;
-    }
+    const run = this._activeRun;
+    if (!run || run.settled) return;
+    this._activeRun = null;
+    run.settled = true;
+    run.reject(new Error("Transcription cancelled"));
+    try { run.process.kill("SIGTERM"); } catch {}
+    run.killTimer = this._schedule(() => {
+      if (!run.closed) { try { run.process.kill("SIGKILL"); } catch {} }
+    }, 2000);
+    run.killTimer?.unref?.();
   }
 }
 

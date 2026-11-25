@@ -7,7 +7,7 @@
       "sha256": "e7fc4dceb21c600335299dd4e3a66ed48269e612da26a20fdfa2ef7f50cfef47",
       "skills": {},
       "sources": {
-        "AGENTS.md": "b54cd29ef02e674d4ef88b710fcc7500240ad18d6c09327c9f0b7ff972f316f3",
+        "AGENTS.md": "a8121b91dc53c9c0e177522751d68d211094e9cb61b9e60595a4957eaba4b3d3",
         "CLAUDE.md": "e7fc4dceb21c600335299dd4e3a66ed48269e612da26a20fdfa2ef7f50cfef47",
         "scripts/build_agent_fidelity.py": "8a24da75fa65f5b24f15cbddd19776c2816caa0dd4cc2537aa30e1784a9af207"
       }
@@ -16,10 +16,10 @@
       "definition": ".claude/agents/hermes-reviewer.md",
       "kind": "reviewer",
       "name": "hermes-reviewer",
-      "sha256": "2340a5f37f8bf8b24dc71c263e12d01cf4d1a2ad5b6f52d5fdd07bad5c3dec42",
+      "sha256": "3e124e3730a4eee288a943d1831d907c89fe4337b50a5ddaaf5c925c2acf8b1d",
       "skills": {},
       "sources": {
-        ".claude/agents/hermes-reviewer.md": "2340a5f37f8bf8b24dc71c263e12d01cf4d1a2ad5b6f52d5fdd07bad5c3dec42"
+        ".claude/agents/hermes-reviewer.md": "3e124e3730a4eee288a943d1831d907c89fe4337b50a5ddaaf5c925c2acf8b1d"
       }
     }
   ],
@@ -28,17 +28,19 @@
   "repo": "jarvis-dashboard",
   "schema_version": 1,
   "shared_sources": {
-    ".claude/settings.json": "89ba4afcfdef6a9ff57ae5d298015c97a446c480a05c603d01c8c5951579d4b2",
-    "AGENTS.md": "b54cd29ef02e674d4ef88b710fcc7500240ad18d6c09327c9f0b7ff972f316f3",
+    ".claude/settings.json": "22e9754056c8de1d9064701fff9ed542027e5addf6e83de720c75dc087cfdfc2",
+    "AGENTS.md": "a8121b91dc53c9c0e177522751d68d211094e9cb61b9e60595a4957eaba4b3d3",
     "CLAUDE.md": "e7fc4dceb21c600335299dd4e3a66ed48269e612da26a20fdfa2ef7f50cfef47",
     "config/maturation.json": "c2be5173622e15a22a333a663c4bb024224c0ab7dd4d12bda2d63f5a57cf4288",
-    "doctrine/agent_delivery.md": "0dedb6cd3a38015a1027ed7f7e4442e6512bb4f0733110688c07a17f114557c9",
+    "doctrine/agent_delivery.md": "2b88461399e058a3d97021fe03def2efd50e4a173bbfde5beaeed47bdb642f04",
     "doctrine/evidence_manifest.md": "810d0e6dd6bfb56d8429617fdf4c290281eb35b68d0251233b04d511c95d5a1d",
     "doctrine/execution_control.md": "1f5b54b129c6b01bba28ac4655164c5b62d87c45e3840428ee1a386576862070",
-    "scripts/agent_gate.py": "24fb62fa4c06879cd6fd43c273e121a644dfdec37045c1c7a0530ea839af1a66",
-    "scripts/check_agent_fidelity.py": "6e6f3e5c8447bf21ba619c7a3dc81a3c7c31988e7d10098e02fc2fef3c6a60ef",
+    "scripts/agent_gate.py": "572ecfa4e484a42fba4a2ff7317dade6b362bcf4e087c4f967e102116f10ac33",
+    "scripts/check_agent_fidelity.py": "b419e683660b93ba3712b3e4f844f43cd24dc9a9bc947a2c0ead61656d6a9d70",
     "scripts/evidence_manifest.py": "7f29b35f9c5fc61770c1e23844e403318950fa087fb3984589ace993ecc547ff",
     "scripts/execution_control.py": "40f217a51785b527f23274d8e178831aa059e48e3f5aab1d19391ccf91fccdf2",
-    "scripts/learning_evidence.py": "ae286dc42cee29c96f094cb8e8ced2c972ed14a5f711b646c0b114a72bf829d9"
+    "scripts/learning_evidence.py": "ae286dc42cee29c96f094cb8e8ced2c972ed14a5f711b646c0b114a72bf829d9",
+    "scripts/routine_receipt.py": "ee651c717836de66145743dd8903d341f706ffe74514f6598b8cc04a8823f6f5",
+    "scripts/runtime_probe.py": "fe5a1f0de870061cb4b938f1696dbee8d813c0d0e602655dc95e8a724506932d"
   }
 }

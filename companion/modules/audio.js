@@ -8,7 +8,12 @@ const { spawn } = require("child_process");
 const crypto = require("crypto");
 
 class AudioSession {
-  constructor(format, ffmpegPath, sizeLimit) {
+  constructor(format, ffmpegPath, sizeLimit, { spawnProcess = spawn, schedule = setTimeout, cancelTimer = clearTimeout } = {}) {
+    this._spawn = spawnProcess;
+    this._schedule = schedule;
+    this._cancelTimer = cancelTimer;
+    this._conversion = null;
+    this._cancelled = false;
     this._id = crypto.randomUUID();
     this._format = format || "mp4";
     this._ffmpegPath = ffmpegPath;
@@ -44,7 +49,7 @@ class AudioSession {
     }
 
     return new Promise((resolve, reject) => {
-      const proc = spawn(this._ffmpegPath, [
+      const proc = this._spawn(this._ffmpegPath, [
         "-i", this._inputPath,
         "-ar", "16000",
         "-ac", "1",
@@ -53,13 +58,25 @@ class AudioSession {
         "-y",
         "-loglevel", "error",
       ]);
+      const conversion = { process: proc, closed: false, settled: false, reject };
+      this._conversion = conversion;
+      const finish = () => {
+        conversion.closed = true;
+        this._cancelTimer(conversion.killTimer);
+        if (this._conversion === conversion) this._conversion = null;
+        try { fs.unlinkSync(this._inputPath); } catch {}
+      };
 
       let stderr = "";
       proc.stderr.on("data", (d) => { stderr += d.toString(); });
 
       proc.on("close", (code) => {
-        // Clean up input file
-        try { fs.unlinkSync(this._inputPath); } catch {}
+        finish();
+        if (this._cancelled || conversion.settled) {
+          try { fs.unlinkSync(this._outputPath); } catch {}
+          return;
+        }
+        conversion.settled = true;
 
         if (code !== 0) {
           try { fs.unlinkSync(this._outputPath); } catch {}
@@ -70,13 +87,27 @@ class AudioSession {
       });
 
       proc.on("error", (err) => {
-        try { fs.unlinkSync(this._inputPath); } catch {}
+        finish();
+        try { fs.unlinkSync(this._outputPath); } catch {}
+        if (conversion.settled) return;
+        conversion.settled = true;
         reject(new Error(`ffmpeg not found: ${err.message}`));
       });
     });
   }
 
   cleanup() {
+    this._cancelled = true;
+    const conversion = this._conversion;
+    if (conversion && !conversion.settled) {
+      conversion.settled = true;
+      conversion.reject(new Error("Audio conversion cancelled"));
+      try { conversion.process.kill("SIGTERM"); } catch {}
+      conversion.killTimer = this._schedule(() => {
+        if (!conversion.closed) { try { conversion.process.kill("SIGKILL"); } catch {} }
+      }, 2000);
+      conversion.killTimer?.unref?.();
+    }
     if (!this._closed) {
       try { fs.closeSync(this._fd); } catch {}
       this._closed = true;
