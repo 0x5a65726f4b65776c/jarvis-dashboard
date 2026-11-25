@@ -2,7 +2,7 @@
 
 ## Overview
 
-Jarvis Dashboard processes all data locally. No data is sent to external servers. The security model focuses on protecting the WebSocket connection between mobile clients and the companion server.
+Audio conversion and transcription run locally. Reasoning requests use the configured CLI provider. This page describes protection of the WebSocket connection between clients and the companion server.
 
 ## TLS Certificates
 
@@ -78,8 +78,9 @@ crypto.timingSafeEqual(Buffer.from(clientToken), Buffer.from(serverToken))
 ```
 
 Invalid tokens result in:
-- Connection closed with code `4001`
-- Connection not counted against rate limits
+
+- HTTP `401` during the WebSocket upgrade, unless the request was already rate limited
+- Connection attempt counted against the rate limit
 - No further messages processed
 
 ## Rate Limiting
@@ -87,7 +88,7 @@ Invalid tokens result in:
 | Setting | Default | Description |
 |---|---|---|
 | `companion.maxConnections` | `2` | Maximum simultaneous WebSocket connections |
-| `companion.rateLimitPerMinute` | `10` | Maximum Claude requests per minute per client |
+| `companion.rateLimitPerMinute` | `10` | Maximum WebSocket upgrade attempts per minute per observed client IP |
 | `companion.idleTimeoutMs` | `300000` (5 min) | Idle connection timeout |
 | `network.audioSizeLimit` | `10485760` (10 MB) | Maximum audio payload size |
 | `network.connectionTimeout` | `10000` (10 sec) | Connection establishment timeout |
@@ -97,9 +98,11 @@ Invalid tokens result in:
 | Server | Port | Security | Use Case |
 |---|---|---|---|
 | WSS (TLS) | 7777 | TLS + token auth | Remote connections (iOS, mobile Obsidian) |
-| WS (plain) | 7778 | No encryption, localhost only | Local connections (macOS app, desktop Obsidian) |
+| WS (plain) | 7778 | Token auth, no encryption, loopback only | Local connections (macOS app, desktop Obsidian) |
 
-The local WS server on port 7778 binds to `localhost` only and does not require authentication. It is only accessible from the same machine.
+The local WS server on port 7778 binds to `127.0.0.1` and requires the same token as the WSS server. The connection-attempt limit is not a limit on commands sent over an established connection.
+
+Inbound message types and their fields are validated before dispatch. Malformed messages return a protocol error; a handler failure is contained to its connection. Audio conversion and transcription belong to that connection's active turn, so replacing or cancelling one client's work does not cancel another client's transcription.
 
 ## Credential Storage by Platform
 

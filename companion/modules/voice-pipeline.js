@@ -25,14 +25,30 @@ class VoicePipeline {
     const session = conn.audioSession;
     const requestTurnId = conn.turnId;
     conn.audioSession = null;
+    const job = {
+      cancelled: false,
+      cancel: () => {
+        if (job.cancelled) return;
+        job.cancelled = true;
+        const ownsTranscription = conn.activeAudio === job;
+        if (ownsTranscription) conn.activeAudio = null;
+        session.cleanup();
+        if (ownsTranscription) this._transcriber.cancel();
+      },
+    };
+    conn.activeAudio = job;
+    // Internal identity also protects clients without a turnId, or clients that
+    // reuse one. A cancelled conversion cannot start a later transcription.
+    const current = () => conn.activeAudio === job && !job.cancelled && conn.turnId === requestTurnId;
 
     try {
       const wavPath = await session.convertToWav();
+      if (!current()) return;
       const wavStat = fs.statSync(wavPath);
       console.log(`[JARVIS] WAV file: ${wavPath} (${wavStat.size} bytes)`);
 
       const result = await this._transcriber.transcribe(wavPath);
-      if (conn.turnId !== requestTurnId) { session.cleanup(); return; }
+      if (!current()) return;
       const text = typeof result === "string" ? result : result.text;
       let detectedLang = typeof result === "string" ? null : result.detectedLang;
       console.log(`[JARVIS] Transcription: "${text}" (lang: ${detectedLang || "default"})`);
@@ -60,9 +76,11 @@ class VoicePipeline {
       conn.send(protocol.transcription(text, detectedLang));
       this.runClaude(text, detectedLang);
     } catch (err) {
-      session.cleanup();
-      if (conn.turnId !== requestTurnId) return;
+      if (!current()) return;
       conn.send(protocol.error("transcription", err.message));
+    } finally {
+      session.cleanup();
+      if (conn.activeAudio === job) conn.activeAudio = null;
     }
   }
 

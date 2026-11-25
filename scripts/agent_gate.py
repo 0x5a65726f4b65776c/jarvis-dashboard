@@ -359,7 +359,40 @@ def packet_check(root, packet, requirement_plan=None):
             text_required(decision.get(key), "Principal " + key)
         if decision.get("deadline") and not decision.get("deadline_source"):
             raise ValueError("A principal deadline needs its external source")
+    mode = packet.get("delivery_mode", "visible")
+    if mode not in {"visible", "silent"}:
+        raise ValueError("Delivery mode must be visible or silent")
+    if mode == "silent":
+        if outcome != "complete" or unresolved or decision:
+            raise ValueError("Silent delivery requires complete work with no unresolved issue or principal decision")
+        silence = packet.get("silence")
+        if not isinstance(silence, dict) or set(silence) != {
+                "reason", "condition", "evidence", "request_input_id", "request_quote"}:
+            raise ValueError("Silent delivery requires its reason, condition, evidence, and original-input quote")
+        for key in ("reason", "condition", "request_input_id", "request_quote"):
+            text_required(silence[key], "Silence " + key)
+        refs = silence["evidence"]
+        if (not isinstance(refs, list) or not refs or any(not isinstance(ref, str) for ref in refs)
+                or len(set(refs)) != len(refs) or not set(refs) <= paths):
+            raise ValueError("Silence condition requires distinct reviewed evidence files")
+        if any(not local(root, ref).read_bytes().strip() for ref in refs):
+            raise ValueError("Silence condition evidence cannot be empty")
+    elif "silence" in packet:
+        raise ValueError("Silence metadata requires explicit silent delivery mode")
     learning_check(root, packet.get("learning"))
+
+
+def delivery_reply_check(packet, reply, inputs):
+    if packet.get("delivery_mode", "visible") != "silent":
+        text_required(reply, "Final reply")
+        return
+    if not isinstance(reply, str) or reply != "":
+        raise ValueError("Silent delivery requires an exact empty final reply")
+    silence = packet["silence"]
+    source = next((row for row in inputs["inputs"]
+                   if row["input_id"] == silence["request_input_id"]), None)
+    if source is None or silence["request_quote"] not in source["text"]:
+        raise ValueError("Silence authorization quote must match a preserved original input")
 
 
 def machine_continuation(payload, state=None):
@@ -426,6 +459,16 @@ def validate_review(review, release, role):
         raise ValueError("Review must assess every required check")
     if review["verdict"] == "pass" and not all(checks.values()):
         raise ValueError("A failed review check cannot pass")
+    if review["verdict"] == "pass":
+        validate_request_review(review.get("request_review"), release)
+        if release["packet"].get("delivery_mode", "visible") == "silent":
+            silent = review.get("silence_review")
+            if (not isinstance(silent, dict) or set(silent) != {
+                    "authorized", "condition_verified", "no_material_omission", "basis"}
+                    or any(silent[key] is not True for key in (
+                        "authorized", "condition_verified", "no_material_omission"))):
+                raise ValueError("Silent delivery requires an independent passing silence review")
+            text_required(silent["basis"], "Independent silence review basis")
     findings = review.get("findings", [])
     if not isinstance(findings, list):
         raise ValueError("Review findings must be a list")
@@ -441,6 +484,58 @@ def validate_review(review, release, role):
                 raise ValueError("A material unresolved finding must be disclosed in the reviewed reply")
 
 
+def validate_request_review(review, release):
+    """Bind a review to the actual inputs, not just the author's interpretation.
+
+    Semantic completeness remains an independent review judgment. The gate makes
+    the original text available and requires an explicit accounting for every
+    captured input; it does not pretend to extract all requirements from prose.
+    """
+    bundle = release.get("request_inputs")
+    if not isinstance(bundle, dict) or not isinstance(review, dict):
+        raise ValueError("Review must account for the preserved original request inputs")
+    if review.get("sha256") != bundle.get("sha256"):
+        raise ValueError("Review is not bound to the current original request inputs")
+    omissions = review.get("omissions")
+    if not isinstance(omissions, list) or omissions:
+        raise ValueError("Original request omissions require revision, not a passing review")
+    rows = review.get("inputs")
+    if not isinstance(rows, list):
+        raise ValueError("Review must map each original input to scope or explain its disposition")
+    planned = {r["id"] for r in (release.get("requirement_plan") or {}).get("plan", {}).get("requirements", [])}
+    expected = {r["input_id"] for r in bundle["inputs"]}
+    seen, covered = set(), set()
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"input_id", "disposition", "requirement_ids", "reason"}:
+            raise ValueError("Input review requires input_id, disposition, requirement_ids, and reason")
+        ident = row["input_id"]
+        if not isinstance(ident, str) or ident not in expected or ident in seen:
+            raise ValueError("Review must account for each captured original input exactly once")
+        seen.add(ident)
+        text_required(row["reason"], "Input scope review reason")
+        refs = row["requirement_ids"]
+        if not isinstance(refs, list) or any(not isinstance(x, str) for x in refs):
+            raise ValueError("Input review requirement_ids must be a list of registered IDs")
+        if len(set(refs)) != len(refs) or not set(refs) <= planned:
+            raise ValueError("Input review references duplicate or unregistered requirements")
+        if row["disposition"] == "covered":
+            if not refs:
+                raise ValueError("Covered input needs registered requirement IDs")
+            covered.update(refs)
+        elif row["disposition"] not in {"context", "superseded"} or refs:
+            raise ValueError("Context or superseded input needs a reason and no claimed requirement coverage")
+    if seen != expected:
+        raise ValueError("Review omitted an original request or steering input")
+    if bundle["availability"] != "available":
+        if release["packet"]["outcome"] != "blocked":
+            raise ValueError("Missing original request inputs cannot support completion")
+        text_required(review.get("unavailable_reason"), "Unavailable original-input disclosure")
+    elif release["packet"]["outcome"] in {"complete", "partial"}:
+        must = {r["id"] for r in release["requirement_plan"]["plan"]["requirements"] if r["priority"] == "must"}
+        if not must <= covered:
+            raise ValueError("Review did not map every essential requirement to an original input")
+
+
 class Gate:
     def __init__(self, root, session):
         self.root = Path(root).resolve()
@@ -454,6 +549,72 @@ class Gate:
 
     def save(self, state):
         write_json(self.path, state)
+
+    def current_fidelity(self):
+        return fidelity(self.root)
+
+    def capture_request(self, state, text, *, origin=None, source="UserPromptSubmit"):
+        """Keep exact text only in ignored local state; event logs retain hashes.
+
+        Event delivery is a local trust assumption, not proof of a human's
+        identity. Source documents and peer/system payloads gain no authority.
+        """
+        if not isinstance(text, str):
+            raise ValueError("Original request text must be a string")
+        if digest(text.encode()) != state.get("prompt_hash"):
+            raise ValueError("Original request text does not match the runtime prompt hash")
+        refs = state.setdefault("request_inputs", [])
+        receipt = {"schema_version": 1, "session_id": self.session,
+                   "input_id": secrets.token_hex(12), "captured_at": now(),
+                   "turn_id": state["turn_id"], "source": source, "origin": origin,
+                   "previous_sha256": refs[-1]["sha256"] if refs else None,
+                   "prompt_sha256": state["prompt_hash"], "text": text}
+        path = self.directory / "requests" / (receipt["input_id"] + ".json")
+        write_json(path, receipt)
+        refs.append({"path": str(path.relative_to(self.root)), "sha256": digest(path.read_bytes())})
+        state["current_input_id"] = receipt["input_id"]
+        self.save(state)
+        self.audit("request_preserved", None, input_id=receipt["input_id"],
+                   prompt_sha256=receipt["prompt_sha256"], source=source)
+        return receipt
+
+    def request_bundle(self, state):
+        inputs, previous = [], None
+        for ref in state.get("request_inputs", []):
+            path = local(self.root, ref["path"])
+            if digest(path.read_bytes()) != ref.get("sha256"):
+                raise ValueError("Preserved original request input changed")
+            receipt = read_json(path)
+            if (receipt.get("session_id") != self.session or receipt.get("previous_sha256") != previous
+                    or not isinstance(receipt.get("text"), str)
+                    or digest(receipt["text"].encode()) != receipt.get("prompt_sha256")):
+                raise ValueError("Original request input belongs to another session or its chain changed")
+            previous = ref["sha256"]
+            inputs.append({**receipt, "reference": ref})
+        current = inputs[-1] if inputs else {}
+        available = bool(current and current["text"].strip() and current["input_id"] == state.get("current_input_id")
+                         and current["prompt_sha256"] == state.get("prompt_hash"))
+        bundle = {"schema_version": 1, "session_id": self.session,
+                  "current_input_id": state.get("current_input_id"), "inputs": inputs,
+                  "availability": "available" if available else "unavailable"}
+        if not available:
+            bundle["reason"] = ("Original prompt text was not captured. For a legacy hash-only turn, use "
+                                "recover-request with exact matching text, or submit the original request again; "
+                                "an agent restatement cannot replace it.")
+        bundle["sha256"] = digest(canonical(bundle))
+        return bundle
+
+    def recover_request(self, text):
+        state = self.read()
+        if self.request_bundle(state)["availability"] == "available":
+            raise ValueError("Original request is already preserved; recovery cannot replace it")
+        if not state.get("turn_id") or not state.get("prompt_hash"):
+            raise ValueError("No legacy runtime prompt hash to recover; submit the original request")
+        receipt = self.capture_request(state, text, source="legacy_hash_recovery")
+        state.update(release=None, reviews={}, delivered=False)
+        self.save(state)
+        return {"input_id": receipt["input_id"], "scope":
+                "Exact text matched the saved prompt hash; not a new runtime dispatch or recovery of earlier uncaptured prompts"}
 
     def begin(self, prompt_hash="", preserve_plan=False, **why):
         state = self.read()
@@ -472,14 +633,23 @@ class Gate:
             raise ValueError("Start a runtime turn before registering its requirements")
         self.validate_context(state)
         plan_check(self.root, plan)
+        inputs = self.request_bundle(state)
+        if inputs["availability"] != "available":
+            raise ValueError(inputs["reason"])
         previous = state.get("requirement_plan")
         if previous:
             if previous["plan"] != plan:
                 raise ValueError("Registered requirements are immutable for this request")
-            return previous
+            if previous.get("request_inputs_sha256") == inputs["sha256"]:
+                return previous
+            # An exact legacy plan may acquire its restored input binding; its
+            # requirements do not change, and every old review is invalidated.
+            if previous.get("request_inputs_sha256") is not None:
+                raise ValueError("Registered requirements belong to other request inputs")
         if state.get("release"):
             raise ValueError("Register requirements before staging a release")
-        record = {"plan": plan, "prompt_sha256": state["prompt_hash"], "created_at": now()}
+        record = {"plan": plan, "prompt_sha256": state["prompt_hash"], "created_at": now(),
+                  "request_inputs_sha256": inputs["sha256"]}
         record["sha256"] = digest(canonical(record))
         state["requirement_plan"] = record
         self.save(state)
@@ -495,6 +665,8 @@ class Gate:
             raise ValueError("Registered requirement plan changed")
         if record.get("prompt_sha256") != state.get("prompt_hash"):
             raise ValueError("Requirement plan belongs to another request")
+        if record.get("request_inputs_sha256") != self.request_bundle(state)["sha256"]:
+            raise ValueError("Requirement plan lacks current original-input binding; recover missing text and re-register the unchanged plan")
         plan_check(self.root, record["plan"])
         return record
 
@@ -568,12 +740,16 @@ class Gate:
         self.validate_context(state)
         requirement_plan = self.requirement_plan(state)
         packet_check(self.root, packet, requirement_plan)
-        text_required(reply, "Final reply")
+        inputs = self.request_bundle(state)
+        if inputs["availability"] != "available" and packet["outcome"] != "blocked":
+            raise ValueError(inputs["reason"])
+        delivery_reply_check(packet, reply, inputs)
         release = {"schema_version": 1, "contract_version": VERSION,
                    "session_id": self.session, "turn_id": state["turn_id"],
                    "created_at": now(), "fidelity_sha256": fidelity(self.root),
                    "worker_receipts": self.required_receipts(state),
                    "requirement_plan": requirement_plan,
+                   "request_inputs": inputs,
                    "packet": packet, "reply": reply, "reply_sha256": reply_hash(reply)}
         release["release_id"] = digest(canonical(release))
         state.update(release=release, reviews={}, delivered=False)
@@ -635,10 +811,13 @@ class Gate:
             raise ValueError("Staged release was modified")
         if fidelity(self.root) != release["fidelity_sha256"]:
             raise ValueError("Instructions changed after review; restage and review")
+        if release.get("request_inputs") != self.request_bundle(state):
+            raise ValueError("Original request inputs changed or were not preserved; restage and review")
         requirement_plan = self.requirement_plan(state)
         if release.get("requirement_plan") != requirement_plan:
             raise ValueError("Requirement plan changed after review")
         packet_check(self.root, release["packet"], requirement_plan)
+        delivery_reply_check(release["packet"], release["reply"], release["request_inputs"])
         if release.get("worker_receipts", []) != self.required_receipts(state):
             raise ValueError("Required worker handoff changed after staging; restage and review")
         for role in ("orchestrator", "hermes"):
@@ -652,13 +831,20 @@ class Gate:
         dispatch = state.get("dispatches", {}).get(hermes.get("agent_id"), {})
         if dispatch.get("agent_type") != REVIEWER or dispatch.get("release_id") != release["release_id"]:
             raise ValueError("Hermes review lacks its independent runtime dispatch receipt")
-        if reply is not None and reply_hash(reply) != release["reply_sha256"]:
-            raise ValueError("Final reply differs from the reviewed reply; restage and review")
+        if reply is not None:
+            delivery_reply_check(release["packet"], reply, release["request_inputs"])
+            if reply_hash(reply) != release["reply_sha256"]:
+                raise ValueError("Final reply differs from the reviewed reply; restage and review")
         return release
 
     def hook(self, payload):
         event = payload["hook_event_name"]
         state = self.read()
+        if event in {"PreToolUse", "PostToolUse"} and payload.get("tool_name") == "Read":
+            if not state.get("runtime_probe_id"):
+                return {}
+            probe = load_module(self.root / "scripts/runtime_probe.py", "agent_runtime_probe")
+            return probe.observe_read(self, payload)
         if event in {"SessionStart", "UserPromptSubmit"}:
             if event == "UserPromptSubmit" and machine_continuation(payload, state) and awaiting_review(state):
                 self.audit("continued", state["release"]["release_id"], hook_event=event,
@@ -670,6 +856,8 @@ class Gate:
                 # match can be diagnosed from the local audit log. State stays in .claude/state.
                 state = self.begin(digest(str(payload.get("prompt", "")).encode()), hook_event=event,
                                    **prompt_trace(payload))
+                if event == "UserPromptSubmit":
+                    self.capture_request(state, payload.get("prompt"), origin=prompt_trace(payload)["origin"])
             try:
                 receipt = self.record_context(state)
                 status = "verified " + receipt["fidelity_sha256"]
@@ -683,6 +871,8 @@ class Gate:
                 "with agent_gate.py plan before substantive delegated work. Before a final reply, stage the exact reply and evidence, "
                 "record the owning orchestrator review, dispatch hermes-reviewer in the foreground and wait for "
                 "its verdict, then check the gate. "
+                "The staged request_inputs preserve original text and steering; both reviews must map each input "
+                "in request_review, identify superseded/context inputs explicitly, and reject omitted requirements. "
                 "Workers return evidence and a learning disposition to their orchestrator. "
                 "Do not route routine review work to Nick. "
                 f"Learning run key {state['turn_id']}; context receipt {(state.get('context_receipt') or {}).get('path', 'unavailable')}. "
@@ -773,13 +963,16 @@ class Gate:
             return {}
         if event == "Stop":
             reply = payload.get("last_assistant_message", "")
-            if state.get("stop_blocks", 0) >= 2 and reply.strip() == BLOCKED_REPLY:
+            if (state.get("stop_blocks", 0) >= 2 and isinstance(reply, str)
+                    and reply.strip() == BLOCKED_REPLY):
                 self.audit("blocked_delivery", (state.get("release") or {}).get("release_id"),
                            reason=state.get("last_error", "Review unavailable"))
                 state["delivered"] = "blocked"
                 self.save(state)
                 return {}
             try:
+                if "last_assistant_message" not in payload or not isinstance(reply, str):
+                    raise ValueError("Final delivery requires an explicit final message string from the runtime")
                 release = self.validate(state, reply)
                 state["delivered"] = True
                 self.save(state)
@@ -804,16 +997,18 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("hook")
     commands.add_parser("fidelity")
-    for name in ("begin", "refresh-context", "plan", "stage", "review", "check"):
+    for name in ("begin", "refresh-context", "recover-request", "plan", "stage", "review", "check"):
         command = commands.add_parser(name)
         command.add_argument("--session", required=True)
         if name == "stage":
             command.add_argument("--packet", required=True)
             command.add_argument("--reply", required=True)
-        if name in {"review", "plan"}:
+        if name in {"review", "plan", "recover-request"}:
             command.add_argument("--file", required=True)
         if name == "check":
             command.add_argument("--artifact", action="append", default=[])
+            command.add_argument("--require-complete", action="store_true",
+                                 help="require verified task completion, not only a reviewed delivery")
             command.add_argument("--transport", action="store_true")
             command.add_argument("--reply-sha256")
             command.add_argument("--prompt-sha256")
@@ -840,6 +1035,8 @@ def main(argv=None):
                           "scope": "Explicit tool-loaded context refresh; this is not a new user request"}
             elif args.command == "plan":
                 result = gate.plan(read_json(local(gate.root, args.file)))
+            elif args.command == "recover-request":
+                result = gate.recover_request(local(gate.root, args.file).read_bytes().decode("utf-8"))
             elif args.command == "stage":
                 result = gate.stage(read_json(local(gate.root, args.packet)), local(gate.root, args.reply).read_text())
             elif args.command == "review":
@@ -848,6 +1045,8 @@ def main(argv=None):
             else:
                 state = gate.read()
                 release = gate.validate(state)
+                if args.require_complete and release["packet"]["outcome"] != "complete":
+                    raise ValueError("Reviewed delivery is not complete")
                 if args.transport:
                     if not args.reply_sha256 or not args.prompt_sha256 or not args.not_before:
                         raise ValueError("Transport release requires reply/prompt hashes and launch time")

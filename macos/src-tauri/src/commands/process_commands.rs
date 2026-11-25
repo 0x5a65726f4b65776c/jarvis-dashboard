@@ -1,13 +1,19 @@
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use tauri::{command, AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 
-/// Global registry of spawned processes (for wait/kill).
-static PROCESSES: std::sync::LazyLock<Mutex<HashMap<String, Child>>> =
+struct OwnedProcess {
+    child: Child,
+    process_group: Option<i32>,
+}
+
+/// Keep ownership here until exit or cancellation, including after pipes close.
+static PROCESSES: std::sync::LazyLock<Mutex<HashMap<String, OwnedProcess>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Separate map for stdin handles — survives after child is taken for wait.
@@ -19,6 +25,7 @@ pub struct SpawnOpts {
     pub cwd: Option<String>,
     pub env: Option<HashMap<String, String>>,
     pub env_remove: Option<Vec<String>>,
+    pub detached: Option<bool>,
 }
 
 #[command]
@@ -54,8 +61,18 @@ pub async fn spawn_process(
     cmd.env_remove("CLAUDE_CODE_ENTRYPOINT");
     cmd.env_remove("CLAUDE_CODE_MAX_OUTPUT_TOKENS");
 
+    #[cfg(unix)]
+    if opts.detached == Some(true) {
+        cmd.process_group(0);
+    }
+
     let mut child = cmd.spawn().map_err(|e| format!("spawn({}): {}", program, e))?;
     let pid = child.id().unwrap_or(0);
+    let process_group = if cfg!(unix) && opts.detached == Some(true) && pid > 0 {
+        Some(pid as i32)
+    } else {
+        None
+    };
 
     // Take stdout/stderr/stdin before storing child
     let stdout = child.stdout.take();
@@ -71,7 +88,7 @@ pub async fn spawn_process(
     // Store child (without stdin) for kill
     {
         let mut procs = PROCESSES.lock().unwrap();
-        procs.insert(id.clone(), child);
+        procs.insert(id.clone(), OwnedProcess { child, process_group });
     }
 
     // Use a shared counter to detect when both stdout+stderr are done
@@ -140,38 +157,68 @@ pub async fn spawn_process(
 
 /// Wait for the process to exit and emit the close event.
 async fn emit_close(app: &AppHandle, id: &str) {
-    // Clean up stdin handle
-    {
-        let mut handles = STDIN_HANDLES.lock().unwrap();
-        handles.remove(id);
-    }
-
-    // Take child from PROCESSES and wait for exit code
-    let maybe_child = {
-        let mut procs = PROCESSES.lock().unwrap();
-        procs.remove(id)
-    };
-    let code = if let Some(mut child) = maybe_child {
-        child.wait().await.ok().and_then(|s| s.code()).unwrap_or(-1)
-    } else {
-        0
+    // Closing stdout/stderr does not prove exit. Leave the child registered so
+    // cancellation remains available while waiting; never hold a lock across await.
+    let code = loop {
+        let code = {
+            let mut procs = PROCESSES.lock().unwrap();
+            match procs.get_mut(id) {
+                Some(owned) => match owned.child.try_wait() {
+                    Ok(None) => None,
+                    result => {
+                        let code = result.ok().flatten().and_then(|s| s.code()).unwrap_or(-1);
+                        procs.remove(id);
+                        STDIN_HANDLES.lock().unwrap().remove(id);
+                        Some(code)
+                    }
+                },
+                // A cancelling owner removed the child. Do not report exit zero.
+                None => Some(-1),
+            }
+        };
+        if let Some(code) = code { break code; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
     };
     let _ = app.emit(&format!("process-close-{}", id), code);
 }
 
+fn signal_group(process_group: Option<i32>, signal: i32) -> Result<(), String> {
+    #[cfg(unix)]
+    if let Some(pgid) = process_group.filter(|pgid| *pgid > 0) {
+        // Only groups created by this spawn registry are accepted; no client PID.
+        let result = unsafe { libc::kill(-pgid, signal) };
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(format!("signal process group: {}", error));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[command]
 pub async fn kill_process(id: String) -> Result<(), String> {
-    // Drop stdin first
-    {
-        let mut handles = STDIN_HANDLES.lock().unwrap();
-        handles.remove(&id);
-    }
-    let maybe_child = {
+    let maybe_owned = {
         let mut procs = PROCESSES.lock().unwrap();
+        STDIN_HANDLES.lock().unwrap().remove(&id);
         procs.remove(&id)
     };
-    if let Some(mut child) = maybe_child {
-        child.kill().await.map_err(|e| format!("kill: {}", e))?;
+    if let Some(mut owned) = maybe_owned {
+        if owned.process_group.is_some() {
+            let term_result = signal_group(owned.process_group, libc::SIGTERM);
+            let exited = tokio::time::timeout(Duration::from_secs(2), owned.child.wait()).await;
+            // A leader's exit can leave descendants alive. Finish this owned
+            // group immediately; do not retain a delayed raw PID kill afterward.
+            let kill_result = signal_group(owned.process_group, libc::SIGKILL);
+            if !matches!(exited, Ok(Ok(_))) {
+                owned.child.kill().await.map_err(|e| format!("kill: {}", e))?;
+            }
+            term_result?;
+            kill_result?;
+        } else {
+            owned.child.kill().await.map_err(|e| format!("kill: {}", e))?;
+        }
     }
     Ok(())
 }
@@ -186,9 +233,12 @@ pub async fn stdin_write(id: String, data: String) -> Result<(), String> {
     if let Some(mut stdin) = maybe_stdin {
         let bytes = data.into_bytes();
         let result = stdin.write_all(&bytes).await;
-        // Put stdin back
-        let mut handles = STDIN_HANDLES.lock().unwrap();
-        handles.insert(id, stdin);
+        // Cancellation may have removed this process while the write awaited.
+        // Use the same lock order as kill_process; do not resurrect its stdin.
+        let procs = PROCESSES.lock().unwrap();
+        if procs.contains_key(&id) {
+            STDIN_HANDLES.lock().unwrap().insert(id, stdin);
+        }
         result.map_err(|e| format!("stdin_write: {}", e))?;
     } else {
         return Err(format!("stdin_write: no stdin handle for process {}", id));
@@ -336,4 +386,54 @@ pub async fn open_app(name: String) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("open_app: {}", e))?;
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod cancellation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancellation_stops_descendants_even_when_the_leader_exits_first_or_ignores_term() {
+        for ignore_leader in [false, true] {
+            let id = uuid::Uuid::new_v4().to_string();
+            let dir = std::env::temp_dir().join(format!("jarvis-native-cancel-{}", id));
+            std::fs::create_dir(&dir).unwrap();
+            let ready = dir.join("ready");
+            let marker = dir.join("effect");
+            let mut cmd = Command::new("sh");
+            cmd.args([
+                "-c",
+                "if [ \"$3\" = yes ]; then trap '' TERM; fi; sh -c 'trap \"\" TERM; printf ready > \"$1\"; sleep 3; printf residual > \"$2\"' child \"$1\" \"$2\" & wait",
+                "fixture",
+            ])
+                .arg(&ready).arg(&marker).arg(if ignore_leader { "yes" } else { "no" })
+                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+                .process_group(0);
+            let child = cmd.spawn().unwrap();
+            let pid = child.id().unwrap() as i32;
+            PROCESSES.lock().unwrap().insert(id.clone(), OwnedProcess { child, process_group: Some(pid) });
+            for _ in 0..100 {
+                if ready.exists() { break; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let started = ready.exists();
+            let cancelled_at = std::time::Instant::now();
+            kill_process(id.clone()).await.unwrap();
+            // Cross the side-effect time even when the grace period was used.
+            let remaining = Duration::from_millis(3200).saturating_sub(cancelled_at.elapsed());
+            tokio::time::sleep(remaining).await;
+            let residual = marker.exists();
+            std::fs::remove_dir_all(&dir).unwrap();
+            assert!(started, "fixture descendant must be ready before cancellation");
+            assert!(!residual, "cancelled native process group left a running descendant");
+            assert!(!PROCESSES.lock().unwrap().contains_key(&id));
+        }
+    }
+
+    #[tokio::test]
+    async fn uncancelled_process_group_can_complete_normally() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "exit 0"]).process_group(0);
+        assert!(cmd.spawn().unwrap().wait().await.unwrap().success());
+    }
 }

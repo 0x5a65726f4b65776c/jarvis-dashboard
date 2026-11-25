@@ -2,6 +2,35 @@
 // Defines the WebSocket message contract between mobile client and server.
 // All messages are JSON strings over text frames. Audio data uses binary frames.
 
+const isObject = value => value !== null && typeof value === "object" && !Array.isArray(value);
+const isString = value => typeof value === "string" && !value.includes("\0");
+const optionalString = value => value == null || isString(value);
+
+function validMessage(msg) {
+  if (!isObject(msg) || !isString(msg.type) || !optionalString(msg.turnId)) return false;
+  switch (msg.type) {
+    case "ping": case "cancel": case "new_session": case "audio_end":
+      return true;
+    case "text_command":
+      return isString(msg.text) && !!msg.text.trim()
+        && optionalString(msg.sessionId) && optionalString(msg.projectPath);
+    case "audio_start":
+      return (msg.format == null || ["mp4", "webm", "wav", "ogg", "m4a", "mp3", "aac"].includes(msg.format))
+        && (msg.sampleRate == null || (Number.isFinite(msg.sampleRate) && msg.sampleRate > 0))
+        && optionalString(msg.sessionId) && optionalString(msg.projectPath);
+    case "tts_toggle":
+      return typeof msg.muted === "boolean";
+    case "permission_response":
+      return isString(msg.requestId) && !!msg.requestId
+        && (msg.behavior == null || ["allow", "deny"].includes(msg.behavior))
+        && (msg.updatedPermissions == null || (Array.isArray(msg.updatedPermissions) && msg.updatedPermissions.every(isObject)));
+    case "question_response":
+      return isString(msg.requestId) && !!msg.requestId && (isString(msg.answer) || isObject(msg.answer));
+    default:
+      return false;
+  }
+}
+
 const protocol = {
   // ── Server → Client message builders ──
 
@@ -49,7 +78,8 @@ const protocol = {
   // ── Parse inbound message — returns null on malformed input ──
   parse: (raw) => {
     try {
-      return JSON.parse(raw);
+      const msg = JSON.parse(raw);
+      return validMessage(msg) ? msg : null;
     } catch {
       return null;
     }

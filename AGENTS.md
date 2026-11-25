@@ -11,7 +11,10 @@ final check before results reach Nick. Preserve domain payloads and tool permiss
 Record corrections in their authoritative home, verify the installed change, and track
 later behavior and recurrence. Do not claim that a recorded lesson is validated learning.
 
-Claude Code uses the checked-in hooks. Other runtimes must call the same context/review
-protocol and supply independent reviewer events before claiming equivalent enforcement;
+Supported Claude Code surfaces use the checked-in hooks; run the opt-in probe in
+`doctrine/agent_delivery.md` to observe actual dispatch and refusal. Offline self-tests
+do not attest deployment, and unsupported surfaces remain explicitly unverified.
+Other runtimes must call the same context/review protocol and supply independent
+reviewer events before claiming equivalent enforcement;
 a file on disk is not proof that a running client loaded it. After an authorized
 instruction change, regenerate the manifest and explicitly refresh runtime context.

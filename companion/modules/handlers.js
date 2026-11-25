@@ -31,11 +31,11 @@ function handleAudioStart(msg, conn, pipeline, { companionConfig, networkConfig 
 }
 
 function handleAudioEnd(msg, conn, pipeline) {
-  pipeline.processAudioEnd();
+  return pipeline.processAudioEnd();
 }
 
 function handleTextCommand(msg, conn, pipeline) {
-  if (!msg.text?.trim()) return;
+  if (typeof msg.text !== "string" || !msg.text.trim()) return;
   conn.killPreviousRun();
   conn.turnId = typeof msg.turnId === "string" ? msg.turnId : null;
   conn.restoreSession(msg.sessionId);

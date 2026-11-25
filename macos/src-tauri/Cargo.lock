@@ -2034,6 +2034,7 @@ name = "macos"
 version = "1.0.0"
 dependencies = [
  "dirs 5.0.1",
+ "libc",
  "serde",
  "serde_json",
  "serde_yaml",
